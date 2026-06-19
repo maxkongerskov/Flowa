@@ -30,6 +30,7 @@ struct HomeView: View {
     @State private var languageQuery: String = ""
     @State private var showingClearConfirm: Bool = false
     @State private var acknowledgementsOpen: Bool = false
+    @State private var recentQuery: String = ""
 
     var body: some View {
         VStack(spacing: 0) {
@@ -234,9 +235,11 @@ struct HomeView: View {
     }
 
     private var microphoneMenu: some View {
-        // Re-enumerate every time the menu opens so newly-plugged
-        // devices appear without a relaunch.
-        let devices = AudioDeviceManager.listInputs()
+        // Filter out Continuity Camera / iPhone mics — they appear in the
+        // device list but don't work reliably with AVAudioEngine.
+        let devices = AudioDeviceManager.listInputs().filter {
+            !$0.name.localizedCaseInsensitiveContains("iPhone")
+        }
         let currentName: String = {
             if microphoneUID == "default" { return "System default" }
             return devices.first(where: { $0.uid == microphoneUID })?.name ?? "System default"
@@ -308,15 +311,45 @@ struct HomeView: View {
 
     // MARK: - Recent
 
+    private var filteredRecent: [Dictation] {
+        let q = recentQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return hotkey.pipeline.recent }
+        return hotkey.pipeline.recent.filter { $0.text.lowercased().contains(q) }
+    }
+
     private var recentSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
+            HStack(alignment: .center) {
                 Text("RECENT")
                     .font(.system(size: 11, weight: .semibold))
                     .tracking(0.5)
                     .foregroundColor(Theme.textTertiary)
                 Spacer()
                 if !hotkey.pipeline.recent.isEmpty {
+                    // Inline compact search field
+                    HStack(spacing: 4) {
+                        Image(systemName: "magnifyingglass")
+                            .font(.system(size: 10))
+                            .foregroundColor(Theme.textTertiary)
+                        TextField("", text: $recentQuery)
+                            .textFieldStyle(.plain)
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.textPrimary)
+                            .frame(width: 80)
+                        if !recentQuery.isEmpty {
+                            Button { recentQuery = "" } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 10))
+                                    .foregroundColor(Theme.textTertiary)
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Theme.surfaceMuted)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+
                     Button("Clear") { showingClearConfirm = true }
                         .buttonStyle(.plain)
                         .font(.system(size: 11, weight: .medium))
@@ -328,9 +361,21 @@ struct HomeView: View {
 
             if hotkey.pipeline.recent.isEmpty {
                 emptyRecent
+            } else if filteredRecent.isEmpty {
+                Text("No results for \"\(recentQuery)\"")
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.textTertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 24)
+                    .background(Theme.cardBackground)
+                    .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Theme.divider, lineWidth: 0.5)
+                    )
             } else {
                 VStack(spacing: 0) {
-                    ForEach(Array(hotkey.pipeline.recent.enumerated()), id: \.element.id) { i, d in
+                    ForEach(Array(filteredRecent.enumerated()), id: \.element.id) { i, d in
                         if i > 0 { divider }
                         RecentRow(dictation: d, metaText: meta(for: d))
                     }
@@ -902,10 +947,6 @@ struct InstallingView: View {
                     .font(.system(size: 19, weight: .semibold))
                     .foregroundColor(Theme.textPrimary)
             }
-            Text("Optimizing the speech engine for your Mac. This only happens once.")
-                .font(.system(size: 13))
-                .foregroundColor(Theme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }

@@ -113,7 +113,13 @@ final class AudioCapture: ObservableObject {
     @Published private(set) var isRecording: Bool = false
     @Published private(set) var lastError: String?
 
-    private let engine = AVAudioEngine()
+    // var (not let) so we can replace it with a fresh instance each
+    // recording session. macOS 26 has stricter AVFAudio tap-state
+    // tracking — even after removeTap+stop, the old engine's internal
+    // tap registry can survive, causing an NSException on the next
+    // installTap that Swift cannot catch. Creating a brand-new engine
+    // each time guarantees a clean slate at the cost of a tiny alloc.
+    private var engine = AVAudioEngine()
     private var collected: [Float] = []
     private let targetSampleRate: Double = 16_000
     // Debug counters — wired into prints so we can see, from a single
@@ -135,6 +141,14 @@ final class AudioCapture: ObservableObject {
         tapCallbackCount = 0
         processBufferNilCount = 0
         lastError = nil
+
+        // Replace the engine with a fresh instance every session.
+        // This is the definitive fix for the "nullptr == Tap()" NSException
+        // that occurs on the second+ recording session on macOS 26.
+        // removeTap alone is not sufficient — AVFAudio's internal tap state
+        // persists on the old engine object even after stop()+removeTap().
+        // A new AVAudioEngine is cheap to allocate and guaranteed clean.
+        engine = AVAudioEngine()
 
         let input = engine.inputNode
 
@@ -186,11 +200,12 @@ final class AudioCapture: ObservableObject {
                           userInfo: [NSLocalizedDescriptionKey: "AVAudioConverter init returned nil for \(nativeFormat) → \(targetFormat)"])
         }
 
+        // Always removeTap before installTap — removeTap is a no-op if no
+        // tap is installed, so this is always safe. Skipping this causes an
+        // unrecoverable NSException crash on the second recording session.
+        // See: https://github.com/rxlabz/speech_recognition/pull/34
+        input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) { [weak self] buf, _ in
-            // Do the heavy lifting on the audio thread, then hop to
-            // main with only Sendable primitives — Float array + level.
-            // Avoids capturing the non-Sendable AVAudioPCMBuffer in
-            // the Task and silences Swift 6 concurrency warnings.
             guard let self else { return }
             self.tapCallbackCount += 1
             guard let (samples, level) = self.processBuffer(buf) else {

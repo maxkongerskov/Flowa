@@ -48,7 +48,7 @@ struct FlowaApp: App {
     @StateObject private var conflict = FnConflictDetector()
     @StateObject private var permissions = PermissionChecker()
 
-    @AppStorage("flowa.colorScheme.dark") private var darkMode: Bool = false
+    @AppStorage("flowa.colorScheme.dark") private var darkMode: Bool = true
 
     var body: some Scene {
         WindowGroup(id: "main") {

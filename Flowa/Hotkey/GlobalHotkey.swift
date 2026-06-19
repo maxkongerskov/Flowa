@@ -21,18 +21,20 @@ final class GlobalHotkey: ObservableObject {
     /// audio level for the live waveform.
     let pipeline = DictationPipeline()
 
-    // Gesture model — intentionally minimal:
-    //   1st Fn press  → start recording (pill shows, audio rolling)
-    //   2nd Fn press  → commit, transcribe, paste
-    //   X on pill     → cancel
-    // No hold vs tap distinction, no timing windows. Holding the key
-    // longer changes nothing — only presses matter.
+    // Gesture model:
+    //
+    //   TAP (any press + release):
+    //     → if not recording: show bar, start recording.
+    //     → if recording: commit, transcribe, paste.
+    //
+    //   X on pill → cancel.
+
+    // Recording mode
+    private enum RecordMode { case none, toggle }
+    private var recordMode: RecordMode = .none
 
     // State
     private var eventTap: CFMachPort?
-    // Mirror of eventTap that the nonisolated callback can read without
-    // hopping to MainActor. Set in start() and never reassigned, so the
-    // unchecked read on the event-tap thread is safe.
     nonisolated(unsafe) fileprivate var eventTapUnsafe: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var fnDownTime: Date?
@@ -119,7 +121,7 @@ final class GlobalHotkey: ObservableObject {
             return
         }
 
-        print("[Flowa] Fn hotkey ready — hold or double-tap to dictate.")
+        print("[Flowa] Fn hotkey ready — tap to start/stop dictation.")
         eventTap = tap
         eventTapUnsafe = tap
         isAuthorized = true
@@ -143,34 +145,36 @@ final class GlobalHotkey: ObservableObject {
         else if !fnNow && fnWas { handleFnReleased() }
     }
 
-    private func handleFnPressed() {
-        // Mark Fn as down so handleFlags' edge detection works.
-        fnDownTime = Date()
-
-        // Already recording? This press is the user telling us to stop.
-        if isListening {
-            print("[Flowa] Fn press → COMMIT")
-            commitListening()
-            return
-        }
-        print("[Flowa] Fn press → START recording")
-
-        // Fresh start. Capture the frontmost app (skipping Flowa
-        // itself) so the synthetic Cmd+V re-activates the right window
-        // even if focus drifts during transcription.
+    private func captureFrontmostApp() {
         let frontmost = NSWorkspace.shared.frontmostApplication
         let ourBundle = Bundle.main.bundleIdentifier
-        if frontmost?.bundleIdentifier != ourBundle {
-            pipeline.targetApp = frontmost
-        } else {
-            pipeline.targetApp = nil   // clipboard-only fallback
+        pipeline.targetApp = (frontmost?.bundleIdentifier != ourBundle) ? frontmost : nil
+    }
+
+    private func handleFnPressed() {
+        // Ignore key-repeat events — only act on the first down edge.
+        guard fnDownTime == nil else { return }
+        fnDownTime = Date()
+
+        switch recordMode {
+        case .toggle:
+            // Already recording — commit immediately on key-down.
+            print("[Flowa] Fn press → COMMIT")
+            recordMode = .none
+            commitListening()
+
+        case .none:
+            // Not recording — capture frontmost app and start immediately.
+            captureFrontmostApp()
+            print("[Flowa] Fn press → START recording")
+            recordMode = .toggle
+            startListening(persistent: true)
         }
-        startListening(persistent: true)
     }
 
     private func handleFnReleased() {
-        // Clear the down-marker so the next press is detected as an
-        // edge by handleFlags. Releases never affect recording state.
+        // Just clear the down-time so the next press is recognised as a
+        // fresh key-down edge. All logic runs on press, not release.
         fnDownTime = nil
     }
 
@@ -188,6 +192,7 @@ final class GlobalHotkey: ObservableObject {
         guard isListening else { return }
         isListening = false
         isInRecordMode = false
+        recordMode = .none
         panel.hide()
         pipeline.commit()   // → transcribe → paste into focused app
     }
@@ -196,6 +201,8 @@ final class GlobalHotkey: ObservableObject {
         guard isListening else { return }
         isListening = false
         isInRecordMode = false
+        recordMode = .none
+        fnDownTime = nil
         panel.hide()
         pipeline.cancel()
     }
