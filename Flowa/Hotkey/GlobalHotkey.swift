@@ -54,6 +54,31 @@ final class GlobalHotkey: ObservableObject {
 
     // MARK: - Lifecycle
 
+    /// Tear down the event tap so a subsequent `start()` rebuilds it
+    /// against the current TCC permission state. Used when Input
+    /// Monitoring is granted *after* launch — the old tap stays dead
+    /// even though permissions are now correct.
+    func stop() {
+        if let tap = eventTap {
+            CGEvent.tapEnable(tap: tap, enable: false)
+        }
+        if let source = runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+        }
+        eventTap = nil
+        eventTapUnsafe = nil
+        runLoopSource = nil
+        isAuthorized = false
+    }
+
+    /// Convenience: stop + start. Call after granting Input Monitoring
+    /// or Accessibility from System Settings so the hotkey actually
+    /// becomes live without quitting the app.
+    func restart() {
+        stop()
+        start()
+    }
+
     func start() {
         guard eventTap == nil else { return }
         let mask = CGEventMask(1 << CGEventType.flagsChanged.rawValue)

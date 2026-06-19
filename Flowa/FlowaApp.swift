@@ -18,11 +18,6 @@ final class FlowaAppDelegate: NSObject, NSApplicationDelegate {
 }
 
 // MARK: - Launch at login
-//
-// Wraps SMAppService (macOS 13+) so the rest of the app can flip the
-// login-item state with a single property. SMAppService persists the
-// registration in the user's login items; no special entitlement
-// needed for "launch this same app at login".
 
 enum LoginItem {
     static var isEnabled: Bool {
@@ -51,11 +46,8 @@ struct FlowaApp: App {
 
     @StateObject private var hotkey = GlobalHotkey()
     @StateObject private var conflict = FnConflictDetector()
-    @StateObject private var accessibility = AccessibilityChecker()
+    @StateObject private var permissions = PermissionChecker()
 
-    /// Persisted dark-mode preference, controlled by the sun/moon
-    /// toggle on the Home page. Drives .preferredColorScheme app-wide
-    /// so every dynamic Theme colour resolves consistently.
     @AppStorage("flowa.colorScheme.dark") private var darkMode: Bool = false
 
     var body: some Scene {
@@ -63,7 +55,7 @@ struct FlowaApp: App {
             RootView(
                 hotkey: hotkey,
                 conflict: conflict,
-                accessibility: accessibility
+                permissions: permissions
             )
             .frame(width: 540, height: 640)
             .background(Theme.pageBackground)
@@ -71,9 +63,20 @@ struct FlowaApp: App {
             .onAppear {
                 hotkey.start()
                 conflict.start()
-                accessibility.start()
-                print("[Flowa] launched. AXIsProcessTrusted=\(accessibility.isTrusted), loginItem=\(LoginItem.isEnabled)")
+                permissions.start()
+                print("[Flowa] launched. mic=\(permissions.microphoneGranted) im=\(permissions.inputMonitoringGranted) ax=\(permissions.accessibilityGranted) loginItem=\(LoginItem.isEnabled)")
                 hotkey.pipeline.prewarm()
+            }
+            .onReceive(NotificationCenter.default.publisher(
+                for: NSApplication.didBecomeActiveNotification)
+            ) { _ in
+                permissions.check()
+                // Rebuild the CGEventTap if Input Monitoring was just
+                // granted in System Settings — without this, the tap
+                // stays dead until full app relaunch.
+                if !hotkey.isAuthorized {
+                    hotkey.restart()
+                }
             }
         }
         .windowStyle(.titleBar)
@@ -81,41 +84,27 @@ struct FlowaApp: App {
         .windowResizability(.contentSize)
         .defaultSize(width: 540, height: 640)
 
-        // Menu bar icon — stays alive even when the main window is
-        // closed. The icon tints based on permission status so the user
-        // can tell at a glance whether dictation will work.
         MenuBarExtra {
-            MenuBarMenu(
-                isAccessibilityGranted: accessibility.isTrusted,
-                isFnConflict: conflict.status != .clean
-            )
+            MenuBarMenu(permissions: permissions, conflict: conflict)
         } label: {
             Image(systemName: menuBarSymbolName)
         }
         .menuBarExtraStyle(.menu)
     }
 
-    /// Pick the SF Symbol drawn in the menu bar based on current
-    /// permission state. The symbol with a slash communicates
-    /// "something's wrong — open Flowa".
     private var menuBarSymbolName: String {
-        if !accessibility.isTrusted || conflict.status != .clean {
+        if !permissions.allGranted || conflict.status != .clean {
             return "waveform.slash"
         }
         return "waveform"
     }
 }
 
-// MARK: - Menu bar menu content
-//
-// The MenuBarExtra accepts a regular SwiftUI body — Buttons render as
-// menu items, Divider() as separator lines. Use the SwiftUI
-// environment's openWindow action to bring the main window back when
-// it has been closed.
+// MARK: - Menu bar menu
 
 private struct MenuBarMenu: View {
-    let isAccessibilityGranted: Bool
-    let isFnConflict: Bool
+    @ObservedObject var permissions: PermissionChecker
+    @ObservedObject var conflict: FnConflictDetector
 
     @Environment(\.openWindow) private var openWindow
 
@@ -128,12 +117,12 @@ private struct MenuBarMenu: View {
 
         Divider()
 
-        if !isAccessibilityGranted {
-            Text("Accessibility permission missing")
-        } else if isFnConflict {
-            Text("Apple Fn handler is hijacking the key")
-        } else {
-            Text("Ready — press fn to dictate")
+        Text(statusText)
+
+        Divider()
+
+        Button("Repair Flowa…") {
+            confirmAndRepair()
         }
 
         Divider()
@@ -142,5 +131,38 @@ private struct MenuBarMenu: View {
             NSApp.terminate(nil)
         }
         .keyboardShortcut("q", modifiers: [.command])
+    }
+
+    private var statusText: String {
+        if !permissions.microphoneGranted { return "Microphone permission missing" }
+        if !permissions.inputMonitoringGranted { return "Input Monitoring permission missing" }
+        if !permissions.accessibilityGranted { return "Accessibility permission missing" }
+        if conflict.status != .clean { return "Apple Fn handler is active" }
+        return "Ready — press fn to dictate"
+    }
+
+    /// Show an NSAlert to confirm, then run the Repair flow if the
+    /// user agrees. Reuses NSAlert because SwiftUI alerts attached to
+    /// a MenuBarExtra menu don't reliably display on macOS.
+    private func confirmAndRepair() {
+        let alert = NSAlert()
+        alert.messageText = "Repair Flowa?"
+        alert.informativeText = """
+        This will:
+        \u{2022} Reset all of Flowa's macOS permissions (Microphone, Input Monitoring, Accessibility)
+        \u{2022} Re-register Flowa.app as the canonical installation
+        \u{2022} Quit and relaunch the app
+
+        You'll be prompted to grant each permission again. Use this if something stopped working after an update or reinstall.
+        """
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Repair and Relaunch")
+        alert.addButton(withTitle: "Cancel")
+
+        NSApp.activate(ignoringOtherApps: true)
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            Repair.run()
+        }
     }
 }

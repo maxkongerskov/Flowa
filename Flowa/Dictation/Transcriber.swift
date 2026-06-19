@@ -33,15 +33,44 @@ final class Transcriber: ObservableObject {
     @Published private(set) var lastTranscript: String = ""
 
     /// Fixed to large-v3-turbo — OpenAI's accelerated large-v3
-    /// variant released Sept 2024. ≈800 MB, 6–8× faster on Apple
-    /// Silicon than vanilla large-v3 with essentially identical
-    /// accuracy on the languages we care about. Downloaded once on
-    /// first launch.
+    /// variant released Sept 2024. ≈1.5 GB on disk, 6–8× faster on
+    /// Apple Silicon than vanilla large-v3 with essentially identical
+    /// accuracy on the languages we care about.
+    ///
+    /// The model files are *bundled* inside the app at
+    /// `Resources/Models/openai_whisper-large-v3-v20240930_turbo/`
+    /// so first-run dictation is instant — no HuggingFace download,
+    /// no network dependency. If for any reason the bundled copy is
+    /// missing we fall back to WhisperKit's download path so the app
+    /// degrades gracefully instead of bricking.
     let modelName: String = "openai_whisper-large-v3-v20240930_turbo"
 
     /// Which model name we're currently holding open. Kept as a single
     /// variable for future-proofing even though modelName is now const.
     private var loadedModelName: String?
+
+    /// Path to the bundled CoreML model folder inside the .app, or
+    /// nil if missing (dev builds without the assets, corrupted
+    /// install, etc.).
+    private static var bundledModelFolderPath: String? {
+        Bundle.main.url(
+            forResource: "openai_whisper-large-v3-v20240930_turbo",
+            withExtension: nil,
+            subdirectory: "Models"
+        )?.path
+    }
+
+    /// URL to the bundled tokenizer folder inside the .app. WhisperKit
+    /// resolves the Whisper tokenizer (vocab + special tokens etc.)
+    /// separately from the CoreML model files — both must be local
+    /// for first-run dictation to work offline.
+    private static var bundledTokenizerFolderURL: URL? {
+        Bundle.main.url(
+            forResource: "whisper-large-v3",
+            withExtension: nil,
+            subdirectory: "Models"
+        )
+    }
 
     #if canImport(WhisperKit)
     private var pipe: WhisperKit?
@@ -60,22 +89,27 @@ final class Transcriber: ObservableObject {
             pipe = nil
         }
         status = .loading(progress: 0)
-        print("[Flowa] Whisper: loading \(wanted) (may download from HuggingFace on first use — large-v3 is ~1.5 GB)")
         let started = Date()
+        let bundledModel = Self.bundledModelFolderPath
+        let bundledTokenizer = Self.bundledTokenizerFolderURL
+        let fullyBundled = bundledModel != nil && bundledTokenizer != nil
+        print("[Flowa] Whisper: loading \(wanted) (model bundled=\(bundledModel != nil), tokenizer bundled=\(bundledTokenizer != nil))")
         do {
             let config = WhisperKitConfig(
                 model: wanted,
+                modelFolder: bundledModel,            // nil → WhisperKit downloads
+                tokenizerFolder: bundledTokenizer,    // nil → WhisperKit downloads
                 verbose: false,
                 logLevel: .error,
                 prewarm: true,
                 load: true,
-                download: true
+                download: !fullyBundled               // only touch the network if anything's missing
             )
             pipe = try await WhisperKit(config)
             loadedModelName = wanted
             status = .ready
             let elapsed = Int(Date().timeIntervalSince(started))
-            print("[Flowa] Whisper: \(wanted) ready in \(elapsed)s")
+            print("[Flowa] Whisper: \(wanted) ready in \(elapsed)s (fullyBundled=\(fullyBundled))")
         } catch {
             status = .error("Could not load Whisper model: \(error.localizedDescription)")
             print("[Flowa] Whisper: FAILED to load \(wanted): \(error.localizedDescription)")

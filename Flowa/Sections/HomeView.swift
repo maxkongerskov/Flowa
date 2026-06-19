@@ -16,7 +16,7 @@ import SwiftUI
 struct HomeView: View {
     @ObservedObject var hotkey: GlobalHotkey
     @ObservedObject var conflict: FnConflictDetector
-    @ObservedObject var accessibility: AccessibilityChecker
+    @ObservedObject var permissions: PermissionChecker
 
     @AppStorage("flowa.colorScheme.dark") private var darkMode: Bool = false
     @AppStorage("flowa.language") private var language: String = "en"
@@ -42,8 +42,29 @@ struct HomeView: View {
                     if case .conflict(let behavior) = conflict.status {
                         ConflictBanner(behavior: behavior, onFix: conflict.openKeyboardSettings)
                     }
-                    if !accessibility.isTrusted {
-                        AccessibilityBanner(onFix: accessibility.requestAccess)
+                    if !permissions.microphoneGranted {
+                        PermissionBanner(
+                            title: "Microphone access needed",
+                            detail: "Without it, Flowa can't capture your voice.",
+                            actionTitle: "Grant",
+                            action: permissions.requestMicrophone
+                        )
+                    }
+                    if !permissions.inputMonitoringGranted {
+                        PermissionBanner(
+                            title: "Input Monitoring needed for the Fn key",
+                            detail: "Without it, Flowa can't see when you press Fn.",
+                            actionTitle: "Open",
+                            action: permissions.requestInputMonitoring
+                        )
+                    }
+                    if !permissions.accessibilityGranted {
+                        PermissionBanner(
+                            title: "Accessibility needed for auto-paste",
+                            detail: "Without it, dictations only land on the clipboard.",
+                            actionTitle: "Grant",
+                            action: permissions.requestAccessibility
+                        )
                     }
 
                     settingsCard
@@ -76,7 +97,7 @@ struct HomeView: View {
                     .foregroundColor(Theme.textPrimary)
             }
             Spacer()
-            StatusPill(isReady: accessibility.isTrusted)
+            StatusPill(isReady: permissions.allGranted)
             DarkModeToggle(isOn: $darkMode)
         }
     }
@@ -697,10 +718,18 @@ private struct ConflictBanner: View {
     }
 }
 
-// MARK: - Accessibility banner
+// MARK: - Permission banner
+//
+// Reusable yellow banner for any missing TCC permission. Used by
+// HomeView to surface Microphone, Input Monitoring, and Accessibility
+// problems when the user is past onboarding but later revoked or
+// macOS has invalidated one of the grants.
 
-private struct AccessibilityBanner: View {
-    let onFix: () -> Void
+struct PermissionBanner: View {
+    let title: String
+    let detail: String
+    let actionTitle: String
+    let action: () -> Void
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -708,16 +737,16 @@ private struct AccessibilityBanner: View {
                 .foregroundColor(Theme.warning)
                 .font(.system(size: 12))
             VStack(alignment: .leading, spacing: 2) {
-                Text("Accessibility needed for auto-paste")
+                Text(title)
                     .font(.system(size: 12, weight: .medium))
                     .foregroundColor(Theme.textPrimary)
-                Text("Without it, dictations only land on the clipboard.")
+                Text(detail)
                     .font(.system(size: 11))
                     .foregroundColor(Theme.textSecondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             Spacer()
-            Button("Grant", action: onFix)
+            Button(actionTitle, action: action)
                 .buttonStyle(.bordered)
                 .controlSize(.small)
         }
@@ -728,5 +757,307 @@ private struct AccessibilityBanner: View {
                 .stroke(Theme.warning.opacity(0.3), lineWidth: 0.5)
         )
         .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
+// MARK: - Installing view
+//
+// Shown once per machine, after onboarding, while the first CoreML
+// model compile runs (~2 minutes on Apple Silicon). Framed as an
+// "installation" rather than a "download" because (a) nothing's
+// actually downloading — the model bundle is local — and (b) users
+// are used to one-time install screens. The progress bar fills over
+// ~130 s and locks at 99% until Transcriber.status flips to .ready,
+// at which point it jumps to 100% and dismisses.
+
+struct InstallingView: View {
+    @ObservedObject var transcriber: Transcriber
+    let onComplete: () -> Void
+
+    @State private var progress: Double = 0.0
+    @State private var timer: Timer? = nil
+    @State private var startTime: Date = Date()
+
+    /// Rough estimate of the full prewarm budget on Apple Silicon.
+    /// Tuned to match the observed ~112 s with a 15 % buffer so the
+    /// bar usually reaches 99 % at or just after `.ready` lands.
+    private let targetSeconds: Double = 130.0
+
+    var body: some View {
+        VStack(spacing: 0) {
+            heroHeader
+                .padding(.horizontal, 28)
+                .padding(.top, 28)
+                .padding(.bottom, 28)
+
+            VStack(alignment: .leading, spacing: 14) {
+                ProgressView(value: progress)
+                    .progressViewStyle(.linear)
+                    .tint(Theme.accent)
+
+                HStack(alignment: .firstTextBaseline) {
+                    Text(stepLabel)
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textSecondary)
+                    Spacer()
+                    Text("\(Int(progress * 100))%")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(Theme.textSecondary)
+                        .monospacedDigit()
+                }
+            }
+            .padding(18)
+            .background(Theme.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Theme.divider, lineWidth: 0.5)
+            )
+            .padding(.horizontal, 22)
+
+            Spacer()
+
+            footnote
+                .padding(.horizontal, 28)
+                .padding(.bottom, 22)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.pageBackground)
+        .onAppear {
+            startTime = Date()
+            startProgressTimer()
+            checkStatus()
+        }
+        .onChange(of: transcriber.status) { _, _ in
+            checkStatus()
+        }
+        .onDisappear { timer?.invalidate() }
+    }
+
+    private var heroHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+                Text("Installing Flowa")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+            }
+            Text("Optimizing the speech engine for your Mac. This only happens once.")
+                .font(.system(size: 13))
+                .foregroundColor(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var footnote: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "lock.shield")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.textTertiary)
+            Text("Runs entirely on-device. No audio leaves your Mac.")
+                .font(.system(size: 11))
+                .foregroundColor(Theme.textTertiary)
+        }
+        .frame(maxWidth: .infinity, alignment: .center)
+    }
+
+    private var stepLabel: String {
+        if progress >= 1.0 {
+            return "Ready"
+        }
+        let remaining = max(0, Int(targetSeconds * (1.0 - progress)))
+        return "Compiling speech model · about \(remaining) seconds left"
+    }
+
+    // MARK: - Progress driver
+
+    private func startProgressTimer() {
+        let updateInterval: Double = 0.4
+        timer = Timer.scheduledTimer(withTimeInterval: updateInterval, repeats: true) { _ in
+            Task { @MainActor in
+                advanceProgress(by: updateInterval)
+                checkStatus()
+            }
+        }
+    }
+
+    @MainActor
+    private func advanceProgress(by interval: Double) {
+        // Linear ramp to 0.99 over the estimated budget. We never let
+        // the bar pre-empt the actual model load — it parks at 99 %
+        // until the transcriber reports .ready.
+        let increment = interval / targetSeconds
+        if progress < 0.99 {
+            progress = min(0.99, progress + increment)
+        }
+    }
+
+    @MainActor
+    private func checkStatus() {
+        if transcriber.status == .ready {
+            progress = 1.0
+            timer?.invalidate()
+            timer = nil
+            // Small delay so the user sees the bar hit 100 % before
+            // we slide them to Home.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+                onComplete()
+            }
+        }
+    }
+}
+
+// MARK: - Onboarding view
+//
+// Shown on first launch (and any time a fresh install hasn't been
+// granted all three TCC permissions yet). Walks the user through
+// Microphone → Input Monitoring → Accessibility one by one. Each row
+// shows the live status; the Get Started button at the bottom only
+// activates once all three are green.
+
+struct OnboardingView: View {
+    @ObservedObject var permissions: PermissionChecker
+    let onComplete: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            heroHeader
+                .padding(.horizontal, 28)
+                .padding(.top, 28)
+                .padding(.bottom, 22)
+
+            VStack(spacing: 10) {
+                step(
+                    index: 1,
+                    icon: "mic.fill",
+                    title: "Microphone",
+                    detail: "Captures your voice so Whisper can transcribe it locally on your Mac.",
+                    granted: permissions.microphoneGranted,
+                    actionTitle: "Allow microphone",
+                    action: permissions.requestMicrophone
+                )
+                step(
+                    index: 2,
+                    icon: "command",
+                    title: "Input Monitoring",
+                    detail: "Lets Flowa see when you press the Fn key. Doesn't read what you type.",
+                    granted: permissions.inputMonitoringGranted,
+                    actionTitle: "Open Settings",
+                    action: permissions.requestInputMonitoring
+                )
+                step(
+                    index: 3,
+                    icon: "lock.shield.fill",
+                    title: "Accessibility",
+                    detail: "Lets Flowa paste your transcripts into the focused app. Cmd+V only — nothing else.",
+                    granted: permissions.accessibilityGranted,
+                    actionTitle: "Allow accessibility",
+                    action: permissions.requestAccessibility
+                )
+            }
+            .padding(.horizontal, 22)
+
+            Spacer(minLength: 12)
+
+            Button(action: onComplete) {
+                Text(permissions.allGranted ? "Get started" : "Waiting for all three…")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(permissions.allGranted ? Theme.cardBackground : Theme.textTertiary)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(permissions.allGranted ? Theme.accent : Theme.surfaceMuted)
+                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .disabled(!permissions.allGranted)
+            .padding(.horizontal, 22)
+            .padding(.bottom, 22)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.pageBackground)
+    }
+
+    // MARK: - Hero
+
+    private var heroHeader: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "waveform")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+                Text("Welcome to Flowa")
+                    .font(.system(size: 19, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+            }
+            Text("Voice dictation that runs entirely on your Mac. Three quick permissions and you're set.")
+                .font(.system(size: 13))
+                .foregroundColor(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    // MARK: - Step row
+
+    private func step(index: Int,
+                      icon: String,
+                      title: String,
+                      detail: String,
+                      granted: Bool,
+                      actionTitle: String,
+                      action: @escaping () -> Void) -> some View {
+        HStack(alignment: .top, spacing: 12) {
+            // Status dot + step number
+            ZStack {
+                Circle()
+                    .fill(granted ? Theme.success : Theme.surfaceMuted)
+                    .frame(width: 26, height: 26)
+                if granted {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .foregroundColor(Theme.cardBackground)
+                } else {
+                    Text("\(index)")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Theme.textSecondary)
+                }
+            }
+            .padding(.top, 2)
+
+            // Title + detail
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Image(systemName: icon)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(Theme.textTertiary)
+                    Text(title)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                }
+                Text(detail)
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.textSecondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 8)
+
+            if !granted {
+                Button(actionTitle, action: action)
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .fixedSize()
+            }
+        }
+        .padding(12)
+        .background(Theme.cardBackground)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(granted ? Theme.success.opacity(0.4) : Theme.divider, lineWidth: 0.5)
+        )
     }
 }
