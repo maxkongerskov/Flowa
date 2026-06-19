@@ -29,6 +29,7 @@ struct HomeView: View {
     @State private var languagePickerOpen: Bool = false
     @State private var languageQuery: String = ""
     @State private var showingClearConfirm: Bool = false
+    @State private var acknowledgementsOpen: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -118,16 +119,17 @@ struct HomeView: View {
                        label: "Microphone",
                        value: { microphoneMenu })
             divider
-            settingRow(icon: "cpu",
-                       label: "Model",
-                       value: { Text("Whisper large v3 turbo").rowValueStyle() })
-            divider
             settingRow(icon: "power",
                        label: "Launch at login",
                        value: { launchAtLoginToggle })
+            divider
+            settingRow(icon: "info.circle",
+                       label: "Acknowledgements",
+                       value: { acknowledgementsChevron })
         }
         .padding(.horizontal, 16)
         .onAppear { launchAtLogin = LoginItem.isEnabled }
+        .sheet(isPresented: $acknowledgementsOpen) { acknowledgementsSheet }
         .background(Theme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
@@ -157,6 +159,62 @@ struct HomeView: View {
         Rectangle()
             .fill(Theme.divider)
             .frame(height: 0.5)
+    }
+
+    private var acknowledgementsChevron: some View {
+        Button {
+            acknowledgementsOpen = true
+        } label: {
+            Image(systemName: "chevron.right")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(Theme.textTertiary)
+        }
+        .buttonStyle(.plain)
+    }
+
+    private var acknowledgementsSheet: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Acknowledgements")
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+                Spacer()
+                Button("Done") { acknowledgementsOpen = false }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(Theme.accent)
+            }
+            .padding(.horizontal, 22)
+            .padding(.top, 22)
+            .padding(.bottom, 18)
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 16) {
+                    Text("Whisper / OpenAI")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Text("MIT License\n\nCopyright © 2022 OpenAI\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+
+                    Divider()
+
+                    Text("WhisperKit / Argmax")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundColor(Theme.textPrimary)
+                    Text("MIT License\n\nCopyright © 2023 Argmax, Inc.\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textSecondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(22)
+            }
+        }
+        .frame(width: 480, height: 500)
+        .background(Theme.pageBackground)
     }
 
     private var launchAtLoginToggle: some View {
