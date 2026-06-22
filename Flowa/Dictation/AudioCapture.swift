@@ -9,8 +9,8 @@
 //
 // Why not stream into WhisperKit live: streaming inference is more
 // fragile and the perceived UX win is small for short dictations
-// (<20s). Phase 1 takes the file-based path for reliability; Phase 5
-// can revisit streaming if the wait time becomes a real friction.
+// (<20s). The file-based path is chosen for reliability; streaming can
+// be revisited if the wait time ever becomes real friction.
 
 import Foundation
 @preconcurrency import AVFoundation
@@ -122,11 +122,6 @@ final class AudioCapture: ObservableObject {
     private var engine = AVAudioEngine()
     private var collected: [Float] = []
     private let targetSampleRate: Double = 16_000
-    // Debug counters — wired into prints so we can see, from a single
-    // dictation cycle, how far the audio pipeline got. Removed once
-    // Phase 1 stabilises.
-    private nonisolated(unsafe) var tapCallbackCount: Int = 0
-    private nonisolated(unsafe) var processBufferNilCount: Int = 0
     // converter is set on MainActor during start() and only read on the
     // audio thread inside processBuffer (nonisolated). The set-then-read
     // ordering means there's no data race in practice — mark it
@@ -138,8 +133,6 @@ final class AudioCapture: ObservableObject {
     func start() throws {
         guard !isRecording else { return }
         collected.removeAll(keepingCapacity: true)
-        tapCallbackCount = 0
-        processBufferNilCount = 0
         lastError = nil
 
         // Replace the engine with a fresh instance every session.
@@ -207,11 +200,7 @@ final class AudioCapture: ObservableObject {
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) { [weak self] buf, _ in
             guard let self else { return }
-            self.tapCallbackCount += 1
-            guard let (samples, level) = self.processBuffer(buf) else {
-                self.processBufferNilCount += 1
-                return
-            }
+            guard let (samples, level) = self.processBuffer(buf) else { return }
             Task { @MainActor [weak self] in
                 self?.append(samples: samples, level: level)
             }

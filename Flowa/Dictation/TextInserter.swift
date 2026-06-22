@@ -36,9 +36,15 @@ enum TextInserter {
 
         // If we have no target, we're done: text is on the clipboard.
         guard let target = targetApp, !target.isTerminated else {
+            #if DEBUG
+            print("[Flowa][paste] no target app — text is on clipboard only")
+            #endif
             return writeOK
         }
 
+        #if DEBUG
+        print("[Flowa][paste] pasting into \(target.localizedName ?? "?") (pid=\(target.processIdentifier))")
+        #endif
         // Re-activate the target so the synthetic Cmd+V lands in the
         // right window even if focus has drifted during transcription.
         target.activate(options: [])
@@ -75,10 +81,12 @@ enum TextInserter {
         vDown.flags = .maskCommand
         vUp.flags   = .maskCommand
 
-        cmdDown.post(tap: .cghidEventTap)
-        vDown.post(tap: .cghidEventTap)
-        vUp.post(tap: .cghidEventTap)
-        cmdUp.post(tap: .cghidEventTap)
+        // Post to the session event tap — reaches whichever app is
+        // currently key (we re-activated the target just before this call).
+        cmdDown.post(tap: .cgSessionEventTap)
+        vDown.post(tap: .cgSessionEventTap)
+        vUp.post(tap: .cgSessionEventTap)
+        cmdUp.post(tap: .cgSessionEventTap)
     }
 }
 

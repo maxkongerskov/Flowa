@@ -97,16 +97,8 @@ final class PermissionChecker: ObservableObject {
     @Published private(set) var inputMonitoringGranted: Bool = false
     @Published private(set) var accessibilityGranted: Bool = false
 
-    /// Bumped on every transition, so views observing it can rebuild
-    /// downstream state (e.g. the CGEventTap after IM is granted).
-    @Published private(set) var changeStamp: Int = 0
-
     var allGranted: Bool {
         microphoneGranted && inputMonitoringGranted && accessibilityGranted
-    }
-
-    var noneGranted: Bool {
-        !microphoneGranted && !inputMonitoringGranted && !accessibilityGranted
     }
 
     private var timer: Timer?
@@ -142,11 +134,9 @@ final class PermissionChecker: ObservableObject {
         let im  = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) == kIOHIDAccessTypeGranted
         let ax  = AXIsProcessTrusted()
 
-        var changed = false
-        if microphoneGranted     != mic { microphoneGranted     = mic; changed = true }
-        if inputMonitoringGranted != im { inputMonitoringGranted = im; changed = true }
-        if accessibilityGranted  != ax  { accessibilityGranted  = ax;  changed = true }
-        if changed { changeStamp &+= 1 }
+        if microphoneGranted      != mic { microphoneGranted      = mic }
+        if inputMonitoringGranted != im  { inputMonitoringGranted = im  }
+        if accessibilityGranted   != ax  { accessibilityGranted   = ax  }
     }
 
     // MARK: Requests + deep links

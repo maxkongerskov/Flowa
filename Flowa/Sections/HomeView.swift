@@ -17,8 +17,20 @@ struct HomeView: View {
     @ObservedObject var hotkey: GlobalHotkey
     @ObservedObject var conflict: FnConflictDetector
     @ObservedObject var permissions: PermissionChecker
+    // Pipeline is a separate ObservableObject — we must observe it
+    // directly so SwiftUI re-renders when `recent` changes after dictation.
+    @ObservedObject private var pipeline: DictationPipeline
 
-    @AppStorage("flowa.colorScheme.dark") private var darkMode: Bool = false
+    init(hotkey: GlobalHotkey, conflict: FnConflictDetector, permissions: PermissionChecker) {
+        self.hotkey = hotkey
+        self.conflict = conflict
+        self.permissions = permissions
+        self._pipeline = ObservedObject(wrappedValue: hotkey.pipeline)
+    }
+
+    // Must match FlowaApp's default for the same key — otherwise the
+    // toggle shows the wrong state on first launch (before the key exists).
+    @AppStorage("flowa.colorScheme.dark") private var darkMode: Bool = true
     @AppStorage("flowa.language") private var language: String = "en"
     @AppStorage("flowa.microphone") private var microphoneUID: String = "default"
     /// Mirrors the real SMAppService state — written by the toggle,
@@ -41,6 +53,9 @@ struct HomeView: View {
 
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {
+                    if let message = pipeline.lastErrorMessage {
+                        ErrorBanner(message: message, onDismiss: pipeline.dismissError)
+                    }
                     if case .conflict(let behavior) = conflict.status {
                         ConflictBanner(behavior: behavior, onFix: conflict.openKeyboardSettings)
                     }
@@ -79,10 +94,10 @@ struct HomeView: View {
         }
         .background(Theme.pageBackground)
         .alert("Clear recent dictations?", isPresented: $showingClearConfirm) {
-            Button("Clear", role: .destructive) { hotkey.pipeline.clearRecent() }
+            Button("Clear", role: .destructive) { pipeline.clearRecent() }
             Button("Cancel", role: .cancel) { }
         } message: {
-            Text("All \(hotkey.pipeline.recent.count) transcripts will be removed. This can't be undone.")
+            Text("All \(pipeline.recent.count) transcripts will be removed. This can't be undone.")
         }
     }
 
@@ -313,8 +328,8 @@ struct HomeView: View {
 
     private var filteredRecent: [Dictation] {
         let q = recentQuery.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return hotkey.pipeline.recent }
-        return hotkey.pipeline.recent.filter { $0.text.lowercased().contains(q) }
+        guard !q.isEmpty else { return pipeline.recent }
+        return pipeline.recent.filter { $0.text.lowercased().contains(q) }
     }
 
     private var recentSection: some View {
@@ -325,7 +340,7 @@ struct HomeView: View {
                     .tracking(0.5)
                     .foregroundColor(Theme.textTertiary)
                 Spacer()
-                if !hotkey.pipeline.recent.isEmpty {
+                if !pipeline.recent.isEmpty {
                     // Inline compact search field
                     HStack(spacing: 4) {
                         Image(systemName: "magnifyingglass")
@@ -359,7 +374,7 @@ struct HomeView: View {
             .padding(.top, 8)
             .padding(.horizontal, 2)
 
-            if hotkey.pipeline.recent.isEmpty {
+            if pipeline.recent.isEmpty {
                 emptyRecent
             } else if filteredRecent.isEmpty {
                 Text("No results for \"\(recentQuery)\"")
@@ -821,6 +836,46 @@ private struct ConflictBanner: View {
     }
 }
 
+// MARK: - Error banner
+//
+// Dismissible red banner for a transient failure from the dictation
+// pipeline (couldn't start recording, model load failed, transcription
+// errored). Driven by DictationPipeline.lastErrorMessage; the X clears it.
+
+struct ErrorBanner: View {
+    let message: String
+    let onDismiss: () -> Void
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Image(systemName: "exclamationmark.octagon.fill")
+                .foregroundColor(Theme.danger)
+                .font(.system(size: 12))
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundColor(Theme.textPrimary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button(action: onDismiss) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(Theme.textTertiary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Dismiss")
+        }
+        .padding(10)
+        .background(Theme.danger.opacity(0.10))
+        .overlay(
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Theme.danger.opacity(0.3), lineWidth: 0.5)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+}
+
 // MARK: - Permission banner
 //
 // Reusable yellow banner for any missing TCC permission. Used by
@@ -865,26 +920,22 @@ struct PermissionBanner: View {
 
 // MARK: - Installing view
 //
-// Shown once per machine, after onboarding, while the first CoreML
-// model compile runs (~2 minutes on Apple Silicon). Framed as an
-// "installation" rather than a "download" because (a) nothing's
-// actually downloading — the model bundle is local — and (b) users
-// are used to one-time install screens. The progress bar fills over
-// ~130 s and locks at 99% until Transcriber.status flips to .ready,
-// at which point it jumps to 100% and dismisses.
+// Shown once per machine, after onboarding, while the speech model is
+// fetched and prepared. Two real phases driven by Transcriber.status:
+//
+//   ① .downloading(progress) — one-time ~1.5 GB model download, with a
+//      real progress bar fed by WhisperKit's download callback.
+//   ② .preparing             — CoreML specialization/compile for this
+//      Mac. No fine-grained progress exists, so the bar is indeterminate.
+//
+// On .error we show a blocking "Try again" state — the user can NOT
+// reach the main window until the model is fully downloaded AND compiled
+// (Transcriber reports .ready). That gating is the whole point: a half-
+// installed app would be a sour first experience.
 
 struct InstallingView: View {
     @ObservedObject var transcriber: Transcriber
     let onComplete: () -> Void
-
-    @State private var progress: Double = 0.0
-    @State private var timer: Timer? = nil
-    @State private var startTime: Date = Date()
-
-    /// Rough estimate of the full prewarm budget on Apple Silicon.
-    /// Tuned to match the observed ~112 s with a 15 % buffer so the
-    /// bar usually reaches 99 % at or just after `.ready` lands.
-    private let targetSeconds: Double = 130.0
 
     var body: some View {
         VStack(spacing: 0) {
@@ -893,30 +944,8 @@ struct InstallingView: View {
                 .padding(.top, 28)
                 .padding(.bottom, 28)
 
-            VStack(alignment: .leading, spacing: 14) {
-                ProgressView(value: progress)
-                    .progressViewStyle(.linear)
-                    .tint(Theme.accent)
-
-                HStack(alignment: .firstTextBaseline) {
-                    Text(stepLabel)
-                        .font(.system(size: 12))
-                        .foregroundColor(Theme.textSecondary)
-                    Spacer()
-                    Text("\(Int(progress * 100))%")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(Theme.textSecondary)
-                        .monospacedDigit()
-                }
-            }
-            .padding(18)
-            .background(Theme.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Theme.divider, lineWidth: 0.5)
-            )
-            .padding(.horizontal, 22)
+            card
+                .padding(.horizontal, 22)
 
             Spacer()
 
@@ -926,15 +955,86 @@ struct InstallingView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Theme.pageBackground)
-        .onAppear {
-            startTime = Date()
-            startProgressTimer()
-            checkStatus()
+        .onAppear { handle(status: transcriber.status, firstAppear: true) }
+        .onChange(of: transcriber.status) { _, newStatus in
+            handle(status: newStatus, firstAppear: false)
         }
-        .onChange(of: transcriber.status) { _, _ in
-            checkStatus()
+    }
+
+    // MARK: - Phase card
+
+    @ViewBuilder
+    private var card: some View {
+        switch transcriber.status {
+        case .error(let message):
+            errorCard(message)
+        case .downloading(let progress):
+            downloadingCard(progress)
+        default:
+            // .preparing / .idle / .transcribing / .ready (brief)
+            preparingCard
         }
-        .onDisappear { timer?.invalidate() }
+    }
+
+    private func downloadingCard(_ progress: Double) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ProgressView(value: progress)
+                .progressViewStyle(.linear)
+                .tint(Theme.accent)
+            HStack(alignment: .firstTextBaseline) {
+                Text("Downloading speech model · one time, ~1.5 GB")
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.textSecondary)
+                Spacer()
+                Text("\(Int(progress * 100))%")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Theme.textSecondary)
+                    .monospacedDigit()
+            }
+        }
+        .modifier(InstallCard())
+    }
+
+    private var preparingCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            ProgressView()
+                .progressViewStyle(.linear)
+                .tint(Theme.accent)
+            Text("Preparing the model for your Mac — this can take a minute or two the first time.")
+                .font(.system(size: 12))
+                .foregroundColor(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .modifier(InstallCard())
+    }
+
+    private func errorCard(_ message: String) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 8) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .font(.system(size: 13))
+                    .foregroundColor(Theme.warning)
+                Text("Setup couldn't finish")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Theme.textPrimary)
+            }
+            Text(message)
+                .font(.system(size: 12))
+                .foregroundColor(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: retry) {
+                Text("Try again")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(Theme.cardBackground)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                    .background(Theme.accent)
+                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 2)
+        }
+        .modifier(InstallCard())
     }
 
     private var heroHeader: some View {
@@ -963,49 +1063,39 @@ struct InstallingView: View {
         .frame(maxWidth: .infinity, alignment: .center)
     }
 
-    private var stepLabel: String {
-        if progress >= 1.0 {
-            return "Ready"
-        }
-        let remaining = max(0, Int(targetSeconds * (1.0 - progress)))
-        return "Compiling speech model · about \(remaining) seconds left"
-    }
+    // MARK: - Status handling
 
-    // MARK: - Progress driver
-
-    private func startProgressTimer() {
-        let updateInterval: Double = 0.4
-        timer = Timer.scheduledTimer(withTimeInterval: updateInterval, repeats: true) { _ in
-            Task { @MainActor in
-                advanceProgress(by: updateInterval)
-                checkStatus()
-            }
+    private func handle(status: Transcriber.Status, firstAppear: Bool) {
+        switch status {
+        case .ready:
+            // Brief beat so a finished state is visible before sliding home.
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onComplete() }
+        case .idle:
+            // prewarm() normally kicks the load at launch; if it somehow
+            // didn't, start it now so the user is never stuck on idle.
+            if firstAppear { retry() }
+        default:
+            break
         }
     }
 
-    @MainActor
-    private func advanceProgress(by interval: Double) {
-        // Linear ramp to 0.99 over the estimated budget. We never let
-        // the bar pre-empt the actual model load — it parks at 99 %
-        // until the transcriber reports .ready.
-        let increment = interval / targetSeconds
-        if progress < 0.99 {
-            progress = min(0.99, progress + increment)
-        }
+    private func retry() {
+        Task { await transcriber.loadIfNeeded() }
     }
+}
 
-    @MainActor
-    private func checkStatus() {
-        if transcriber.status == .ready {
-            progress = 1.0
-            timer?.invalidate()
-            timer = nil
-            // Small delay so the user sees the bar hit 100 % before
-            // we slide them to Home.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-                onComplete()
-            }
-        }
+/// Shared chrome for the install screen's single card.
+private struct InstallCard: ViewModifier {
+    func body(content: Content) -> some View {
+        content
+            .padding(18)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.cardBackground)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Theme.divider, lineWidth: 0.5)
+            )
     }
 }
 

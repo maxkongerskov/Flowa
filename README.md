@@ -14,7 +14,7 @@ That's it.
 
 ## Features
 
-- **Fully local** — powered by Whisper Large v3 Turbo (CoreML), bundled inside the app. First dictation is instant, no download required
+- **Fully local** — powered by Whisper Large v3 Turbo (CoreML). The model (~1.5 GB) downloads once on first launch; after that everything runs on your Mac with no network
 - **Any language** — 99 languages supported. Switch languages mid-session; Flowa picks it up automatically
 - **Works everywhere** — dictates into any app: notes, email, chat, code editors, browsers
 - **Menu bar icon** — stays running in the background, always ready
@@ -23,8 +23,9 @@ That's it.
 
 ## Requirements
 
-- macOS 13 or later
+- macOS 14 or later
 - Apple Silicon (M1 or later) recommended — runs on Intel but model compilation takes longer on first launch
+- An internet connection on first launch only (to download the ~1.5 GB speech model)
 
 ## Setup
 
@@ -37,7 +38,7 @@ That's it.
    - **Accessibility** — to paste text into the focused app
 5. Go to System Settings → Keyboard → set "Press 🌐 key to" → **Do Nothing** (otherwise macOS intercepts `fn` before Flowa sees it)
 
-On first launch, the app compiles the Whisper model for your specific Mac. This takes ~2 minutes and only happens once.
+On first launch, Flowa downloads the Whisper model (~1.5 GB) and then compiles it for your specific Mac. This needs an internet connection, happens once, and shows a progress screen — you reach the main window only after it finishes. Every launch after that is offline.
 
 ## Dependencies
 

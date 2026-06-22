@@ -21,12 +21,15 @@ DerivedData/
 *.dSYM.zip
 *.dSYM
 
-# Swift Package Manager — keep Package.resolved, ignore checkouts
+# Swift Package Manager — track Package.resolved (pins WhisperKit), ignore checkouts
 .swiftpm/
 .build/
 Packages/
-xcshareddata/
+
+# Speech model — downloaded at runtime, never bundled or committed (~1.5 GB)
+Flowa/Models/openai_whisper-large-v3-v20240930_turbo/
 
 # Backups
 *.bak
 *.bak.*
+.git.backup/

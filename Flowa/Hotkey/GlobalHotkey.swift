@@ -1,9 +1,9 @@
 // GlobalHotkey.swift
 // Flowa
 //
-// Detect the Fn key globally via CGEventTap and classify each interaction
-// as HOLD, SINGLE_TAP, or DOUBLE_TAP. Ported from Vani Spike 1 with the
-// listening-state hooks driving FloatingPanel show/hide.
+// Detect the Fn key globally via CGEventTap and treat each press as a
+// toggle: the first press starts recording, the next press commits.
+// The listening-state hooks drive FloatingPanel show/hide.
 
 import Foundation
 import AppKit
@@ -14,7 +14,6 @@ final class GlobalHotkey: ObservableObject {
 
     @Published var isAuthorized: Bool = false
     @Published var isListening:  Bool = false
-    @Published var isInRecordMode: Bool = false
 
     /// Owned pipeline — audio capture, Whisper transcription, paste.
     /// Public so views (and the Flow Bar) can bind to its published
@@ -87,10 +86,6 @@ final class GlobalHotkey: ObservableObject {
         let opaqueSelf = Unmanaged.passUnretained(self).toOpaque()
 
         let callback: CGEventTapCallBack = { _, type, event, refcon in
-            // First-line tracer: confirms the tap callback is alive
-            // and receiving events. If we never see this even when
-            // pressing Fn, Input Monitoring is silently denied.
-            print("[Flowa][tap] event type=\(type.rawValue)")
             guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
             let me = Unmanaged<GlobalHotkey>.fromOpaque(refcon).takeUnretainedValue()
 
@@ -131,11 +126,6 @@ final class GlobalHotkey: ObservableObject {
         runLoopSource = source
     }
 
-    private func reenableTap() {
-        guard let tap = eventTap else { return }
-        CGEvent.tapEnable(tap: tap, enable: true)
-    }
-
     // MARK: - State machine
 
     private func handleFlags(_ flags: CGEventFlags) {
@@ -168,7 +158,7 @@ final class GlobalHotkey: ObservableObject {
             captureFrontmostApp()
             print("[Flowa] Fn press → START recording")
             recordMode = .toggle
-            startListening(persistent: true)
+            startListening()
         }
     }
 
@@ -180,10 +170,9 @@ final class GlobalHotkey: ObservableObject {
 
     // MARK: - Listening commands
 
-    private func startListening(persistent: Bool) {
+    private func startListening() {
         guard !isListening else { return }
         isListening = true
-        isInRecordMode = persistent
         panel.show()
         pipeline.start()
     }
@@ -191,7 +180,6 @@ final class GlobalHotkey: ObservableObject {
     func commitListening() {
         guard isListening else { return }
         isListening = false
-        isInRecordMode = false
         recordMode = .none
         panel.hide()
         pipeline.commit()   // → transcribe → paste into focused app
@@ -200,7 +188,6 @@ final class GlobalHotkey: ObservableObject {
     func cancelListening() {
         guard isListening else { return }
         isListening = false
-        isInRecordMode = false
         recordMode = .none
         fnDownTime = nil
         panel.hide()

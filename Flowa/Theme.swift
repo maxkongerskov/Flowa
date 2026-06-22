@@ -63,18 +63,6 @@ enum Theme {
         dark:  Color(red: 0.478, green: 0.478, blue: 0.494)
     )
 
-    // MARK: - Stats (the one place blue shows)
-
-    static let statsAccent = dynamic(
-        light: Color(red: 0.231, green: 0.388, blue: 0.945),
-        dark:  Color(red: 0.396, green: 0.529, blue: 0.984)
-    )
-
-    static let statsMuted = dynamic(
-        light: Color(red: 0.231, green: 0.388, blue: 0.945).opacity(0.18),
-        dark:  Color(red: 0.396, green: 0.529, blue: 0.984).opacity(0.22)
-    )
-
     // MARK: - Semantic
 
     static let success = dynamic(
@@ -99,17 +87,6 @@ enum Theme {
     static let flowBarBackground = Color.black.opacity(0.88)
     static let flowBarText       = Color.white
 
-    // MARK: - Type ramps
-
-    enum FontSize {
-        static let title: CGFloat       = 26
-        static let bannerHero: CGFloat  = 22
-        static let body: CGFloat        = 14
-        static let label: CGFloat       = 13
-        static let small: CGFloat       = 12
-        static let tiny: CGFloat        = 11
-    }
-
     // MARK: - Internal
 
     /// SwiftUI Color that auto-resolves based on NSAppearance — which
@@ -120,21 +97,5 @@ enum Theme {
             let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
             return NSColor(isDark ? dark : light)
         }))
-    }
-}
-
-// MARK: - Conveniences
-
-extension View {
-    /// Standard card chrome — used by Hub content cards.
-    func flowaCard(padding: CGFloat = 16) -> some View {
-        self
-            .padding(padding)
-            .background(Theme.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
-                    .stroke(Theme.divider, lineWidth: 0.5)
-            )
     }
 }

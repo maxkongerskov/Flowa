@@ -23,26 +23,26 @@ final class Transcriber: ObservableObject {
 
     enum Status: Equatable {
         case idle
-        case loading(progress: Double)   // 0...1 during initial model download
+        case downloading(progress: Double)   // 0...1 while the model downloads
+        case preparing                       // CoreML specialize/compile + tokenizer load
         case ready
         case transcribing
         case error(String)
     }
 
     @Published private(set) var status: Status = .idle
-    @Published private(set) var lastTranscript: String = ""
 
     /// Fixed to large-v3-turbo — OpenAI's accelerated large-v3
     /// variant released Sept 2024. ≈1.5 GB on disk, 6–8× faster on
     /// Apple Silicon than vanilla large-v3 with essentially identical
     /// accuracy on the languages we care about.
     ///
-    /// The model files are *bundled* inside the app at
-    /// `Resources/Models/openai_whisper-large-v3-v20240930_turbo/`
-    /// so first-run dictation is instant — no HuggingFace download,
-    /// no network dependency. If for any reason the bundled copy is
-    /// missing we fall back to WhisperKit's download path so the app
-    /// degrades gracefully instead of bricking.
+    /// The CoreML model is *downloaded once* on first launch from the
+    /// WhisperKit model hub (≈1.5 GB) — see `loadIfNeeded()`. We keep it
+    /// out of the app bundle so the binary stays small. The tiny (~3 MB)
+    /// tokenizer *is* bundled, so only the model itself needs the network.
+    /// If a bundled model copy is ever present we use it and skip the
+    /// download, so the app still works fully offline when shipped that way.
     let modelName: String = "openai_whisper-large-v3-v20240930_turbo"
 
     /// Which model name we're currently holding open. Kept as a single
@@ -84,39 +84,68 @@ final class Transcriber: ObservableObject {
         #if canImport(WhisperKit)
         let wanted = modelName
         if pipe != nil, loadedModelName == wanted { return }
-        if pipe != nil {
-            print("[Flowa] Whisper: switching from \(loadedModelName ?? "<none>") to \(wanted) — discarding old pipe")
-            pipe = nil
-        }
-        status = .loading(progress: 0)
+        pipe = nil
+
         let started = Date()
-        let bundledModel = Self.bundledModelFolderPath
-        let bundledTokenizer = Self.bundledTokenizerFolderURL
-        let fullyBundled = bundledModel != nil && bundledTokenizer != nil
-        print("[Flowa] Whisper: loading \(wanted) (model bundled=\(bundledModel != nil), tokenizer bundled=\(bundledTokenizer != nil))")
         do {
+            // 1. Resolve the model folder. Prefer a bundled copy if present
+            //    (builds that still ship it); otherwise download it once
+            //    from the WhisperKit hub, reporting live progress so the
+            //    install screen can show a real download bar.
+            let modelFolder: String
+            if let bundled = Self.bundledModelFolderPath {
+                modelFolder = bundled
+            } else {
+                status = .downloading(progress: 0)
+                let url = try await WhisperKit.download(
+                    variant: wanted,
+                    progressCallback: { progress in
+                        Task { @MainActor [weak self] in
+                            self?.status = .downloading(progress: progress.fractionCompleted)
+                        }
+                    }
+                )
+                modelFolder = url.path
+            }
+
+            // 2. Load + specialize the CoreML model for this Mac. With
+            //    prewarm+load, this only returns once compilation is done —
+            //    so callers can treat `.ready` as "fully usable", which is
+            //    what gates the user into the main window.
+            status = .preparing
             let config = WhisperKitConfig(
                 model: wanted,
-                modelFolder: bundledModel,            // nil → WhisperKit downloads
-                tokenizerFolder: bundledTokenizer,    // nil → WhisperKit downloads
+                modelFolder: modelFolder,
+                tokenizerFolder: Self.bundledTokenizerFolderURL,
                 verbose: false,
                 logLevel: .error,
                 prewarm: true,
                 load: true,
-                download: !fullyBundled               // only touch the network if anything's missing
+                download: false                       // already resolved above
             )
             pipe = try await WhisperKit(config)
             loadedModelName = wanted
             status = .ready
             let elapsed = Int(Date().timeIntervalSince(started))
-            print("[Flowa] Whisper: \(wanted) ready in \(elapsed)s (fullyBundled=\(fullyBundled))")
+            print("[Flowa] Whisper: \(wanted) ready in \(elapsed)s")
         } catch {
-            status = .error("Could not load Whisper model: \(error.localizedDescription)")
+            status = .error(Self.friendlyLoadError(error))
             print("[Flowa] Whisper: FAILED to load \(wanted): \(error.localizedDescription)")
         }
         #else
         status = .error("WhisperKit not added. File → Add Package Dependencies → https://github.com/argmaxinc/WhisperKit")
         #endif
+    }
+
+    /// Map a load/download failure to a short, user-facing sentence for
+    /// the install screen. A missing network connection is by far the
+    /// most common cause on first launch.
+    private static func friendlyLoadError(_ error: Error) -> String {
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            return "Couldn't download the speech model. Check your internet connection and try again."
+        }
+        return "Couldn't prepare the speech model. Please try again."
     }
 
     /// Reads the user's language preference from UserDefaults each call,
@@ -153,7 +182,6 @@ final class Transcriber: ObservableObject {
                                                      decodeOptions: options)
             let text = results.map(\TranscriptionResult.text).joined(separator: " ")
                 .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
-            lastTranscript = text
             status = .ready
             return text.isEmpty ? nil : text
         } catch {
