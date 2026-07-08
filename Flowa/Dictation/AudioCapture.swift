@@ -9,8 +9,8 @@
 //
 // Why not stream into WhisperKit live: streaming inference is more
 // fragile and the perceived UX win is small for short dictations
-// (<20s). The file-based path is chosen for reliability; streaming can
-// be revisited if the wait time ever becomes real friction.
+// (<20s). Phase 1 takes the file-based path for reliability; Phase 5
+// can revisit streaming if the wait time becomes a real friction.
 
 import Foundation
 @preconcurrency import AVFoundation
@@ -122,6 +122,12 @@ final class AudioCapture: ObservableObject {
     private var engine = AVAudioEngine()
     private var collected: [Float] = []
     private let targetSampleRate: Double = 16_000
+    // Debug counters — used only under DEBUG to observe tap path health.
+    // Not read in release builds.
+    #if DEBUG
+    private nonisolated(unsafe) var tapCallbackCount: Int = 0
+    private nonisolated(unsafe) var processBufferNilCount: Int = 0
+    #endif
     // converter is set on MainActor during start() and only read on the
     // audio thread inside processBuffer (nonisolated). The set-then-read
     // ordering means there's no data race in practice — mark it
@@ -133,6 +139,10 @@ final class AudioCapture: ObservableObject {
     func start() throws {
         guard !isRecording else { return }
         collected.removeAll(keepingCapacity: true)
+        #if DEBUG
+        tapCallbackCount = 0
+        processBufferNilCount = 0
+        #endif
         lastError = nil
 
         // Replace the engine with a fresh instance every session.
@@ -195,12 +205,25 @@ final class AudioCapture: ObservableObject {
 
         // Always removeTap before installTap — removeTap is a no-op if no
         // tap is installed, so this is always safe. Skipping this causes an
-        // unrecoverable NSException crash on the second recording session.
-        // See: https://github.com/rxlabz/speech_recognition/pull/34
+        // unrecoverable NSException crash on the second recording session
+        // on macOS 26 (even on happy paths after the first session).
+        // See the reverted fix in commit 6c96979 and AVFAudio internals.
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) { [weak self] buf, _ in
+            // Do the heavy lifting on the audio thread, then hop to
+            // main with only Sendable primitives — Float array + level.
+            // Avoids capturing the non-Sendable AVAudioPCMBuffer in
+            // the Task and silences Swift 6 concurrency warnings.
             guard let self else { return }
-            guard let (samples, level) = self.processBuffer(buf) else { return }
+            #if DEBUG
+            self.tapCallbackCount += 1
+            #endif
+            guard let (samples, level) = self.processBuffer(buf) else {
+                #if DEBUG
+                self.processBufferNilCount += 1
+                #endif
+                return
+            }
             Task { @MainActor [weak self] in
                 self?.append(samples: samples, level: level)
             }

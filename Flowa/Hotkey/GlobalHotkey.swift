@@ -172,9 +172,18 @@ final class GlobalHotkey: ObservableObject {
 
     private func startListening() {
         guard !isListening else { return }
-        isListening = true
-        panel.show()
-        pipeline.start()
+        // Only show the recording UI (isListening + panel) if audio
+        // actually starts. This prevents the Flow Bar from appearing
+        // for a dictation that will immediately fail (Issue 6).
+        if pipeline.start() {
+            isListening = true
+            panel.show()
+        } else {
+            // Failure: pipeline already set lastErrorMessage.
+            // UI state remains clean; HomeView banner will surface the error
+            // when the main window is visible.
+            recordMode = .none
+        }
     }
 
     func commitListening() {

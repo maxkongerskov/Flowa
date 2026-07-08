@@ -45,9 +45,11 @@ final class DictationPipeline: ObservableObject {
     /// The app that was frontmost when dictation started — the paste
     /// target. Captured by GlobalHotkey on Fn DOWN; re-activated
     /// before the synthetic Cmd+V so it lands in the right window.
+    ///
+    /// NOTE: This is overwritten on every new start. For in-flight
+    /// transcriptions (runTranscription Task), we snapshot the value
+    /// at commit() time to avoid TOCTOU races (Issue 8).
     var targetApp: NSRunningApplication?
-
-    @Published private(set) var lastPasteFailed: Bool = false
 
     /// User-facing message for the most recent failure (audio start,
     /// model load, or transcription). nil when there's nothing to show.
@@ -110,19 +112,30 @@ final class DictationPipeline: ObservableObject {
 
     // MARK: - Lifecycle
 
-    func start() {
+    /// Returns true if audio capture started successfully.
+    /// On failure, sets lastErrorMessage (caller may choose not to show
+    /// recording UI).
+    @discardableResult
+    func start() -> Bool {
         lastErrorMessage = nil
         do {
             try audio.start()
+            return true
         } catch {
+            let details = String(describing: error)
             lastErrorMessage = "Couldn't start recording. Check your microphone and try again."
-            print("[Flowa] pipeline.start FAILED: \(error.localizedDescription)")
+            print("[Flowa] pipeline.start FAILED: \(error) — full: \(details)")
+            return false
         }
     }
 
     func commit() {
         guard let wavURL = audio.stop() else { return }
-        Task { await runTranscription(wavURL: wavURL) }
+        // Snapshot the target at commit time. This prevents an in-flight
+        // transcription Task from observing a later targetApp overwrite
+        // when the user quickly starts a new dictation (Issue 8).
+        let capturedTarget = targetApp
+        Task { await runTranscription(wavURL: wavURL, targetApp: capturedTarget) }
     }
 
     func cancel() {
@@ -131,7 +144,7 @@ final class DictationPipeline: ObservableObject {
 
     // MARK: - Transcription + paste
 
-    private func runTranscription(wavURL: URL) async {
+    private func runTranscription(wavURL: URL, targetApp: NSRunningApplication?) async {
         await transcriber.loadIfNeeded()
 
         let started = Date()
@@ -147,8 +160,7 @@ final class DictationPipeline: ObservableObject {
         }
         let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
 
-        let ok = TextInserter.paste(text, targetApp: targetApp)
-        lastPasteFailed = !ok
+        _ = TextInserter.paste(text, targetApp: targetApp)
 
         // Never log transcript content or the target app in release builds —
         // the unified log is captured by Console / sysdiagnose.
