@@ -1,48 +1,30 @@
 // HomeView.swift
 // Flowa
 //
-// Settings-rows layout — feels like a native macOS preferences pane.
-// Locked window dimensions in FlowaApp constrain this view to a fixed
-// frame so spacing stays calibrated.
-//
-//   • Header: wordmark + Ready pill + sun/moon toggle
-//   • Permission banners (Fn conflict, missing Accessibility)
-//   • A single rounded card of four settings rows
-//     (Shortcut · Language · Microphone · Model)
-//   • Recent dictations as a quiet list below
+// Main settings + recent dictations. First-run screens live under Onboarding/.
 
 import SwiftUI
+import AppKit
 
 struct HomeView: View {
-    @ObservedObject var hotkey: GlobalHotkey
+    @ObservedObject var pipeline: DictationPipeline
     @ObservedObject var conflict: FnConflictDetector
     @ObservedObject var permissions: PermissionChecker
-    // Pipeline is a separate ObservableObject — we must observe it
-    // directly so SwiftUI re-renders when `recent` changes after dictation.
-    @ObservedObject private var pipeline: DictationPipeline
 
-    init(hotkey: GlobalHotkey, conflict: FnConflictDetector, permissions: PermissionChecker) {
-        self.hotkey = hotkey
-        self.conflict = conflict
-        self.permissions = permissions
-        self._pipeline = ObservedObject(wrappedValue: hotkey.pipeline)
-    }
+    @AppStorage(PrefKey.colorSchemeDark) private var darkMode: Bool = true
+    @AppStorage(PrefKey.language) private var language: String = "en"
+    @AppStorage(PrefKey.microphone) private var microphoneUID: String = "default"
 
-    // Must match FlowaApp's default for the same key — otherwise the
-    // toggle shows the wrong state on first launch (before the key exists).
-    @AppStorage("flowa.colorScheme.dark") private var darkMode: Bool = true
-    @AppStorage("flowa.language") private var language: String = "en"
-    @AppStorage("flowa.microphone") private var microphoneUID: String = "default"
-    /// Mirrors the real SMAppService state — written by the toggle,
-    /// read on launch + every time Home renders so the UI stays in
-    /// sync if the user changes it in System Settings → Login Items.
     @State private var launchAtLogin: Bool = LoginItem.isEnabled
-
     @State private var languagePickerOpen: Bool = false
     @State private var languageQuery: String = ""
     @State private var showingClearConfirm: Bool = false
     @State private var acknowledgementsOpen: Bool = false
     @State private var recentQuery: String = ""
+    /// Typed max-duration field (minutes). Synced from Preferences on appear / commit.
+    @State private var maxDurationField: String = "\(Preferences.maxDurationMinutes)"
+    /// Cached input devices — refreshed on appear / when opening the menu, not every body pass.
+    @State private var inputDevices: [AudioInputDevice] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,6 +37,15 @@ struct HomeView: View {
                 VStack(alignment: .leading, spacing: 16) {
                     if let message = pipeline.lastErrorMessage {
                         ErrorBanner(message: message, onDismiss: pipeline.dismissError)
+                    }
+                    if case .error(let modelMessage) = pipeline.transcriber.status {
+                        StatusBanner(
+                            severity: .danger,
+                            title: "Installation needs attention",
+                            detail: modelMessage,
+                            actionTitle: "Install again",
+                            action: { pipeline.reinstallSpeechModel() }
+                        )
                     }
                     if case .conflict(let behavior) = conflict.status {
                         ConflictBanner(behavior: behavior, onFix: conflict.openKeyboardSettings)
@@ -93,6 +84,11 @@ struct HomeView: View {
             }
         }
         .background(Theme.pageBackground)
+        .onAppear {
+            launchAtLogin = LoginItem.isEnabled
+            maxDurationField = "\(Preferences.maxDurationMinutes)"
+            refreshInputDevices()
+        }
         .alert("Clear recent dictations?", isPresented: $showingClearConfirm) {
             Button("Clear", role: .destructive) { pipeline.clearRecent() }
             Button("Cancel", role: .cancel) { }
@@ -119,7 +115,7 @@ struct HomeView: View {
         }
     }
 
-    // MARK: - Settings card
+    // MARK: - Settings
 
     private var settingsCard: some View {
         VStack(spacing: 0) {
@@ -139,13 +135,16 @@ struct HomeView: View {
                        label: "Launch at login",
                        value: { launchAtLoginToggle })
             divider
+            maxDurationRow
+            divider
             settingRow(icon: "info.circle",
                        label: "Acknowledgements",
                        value: { acknowledgementsChevron })
         }
         .padding(.horizontal, 16)
-        .onAppear { launchAtLogin = LoginItem.isEnabled }
-        .sheet(isPresented: $acknowledgementsOpen) { acknowledgementsSheet }
+        .sheet(isPresented: $acknowledgementsOpen) {
+            AcknowledgementsView(isPresented: $acknowledgementsOpen)
+        }
         .background(Theme.cardBackground)
         .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
         .overlay(
@@ -188,59 +187,11 @@ struct HomeView: View {
         .buttonStyle(.plain)
     }
 
-    private var acknowledgementsSheet: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Acknowledgements")
-                    .font(.system(size: 15, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
-                Spacer()
-                Button("Done") { acknowledgementsOpen = false }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(Theme.accent)
-            }
-            .padding(.horizontal, 22)
-            .padding(.top, 22)
-            .padding(.bottom, 18)
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 16) {
-                    Text("Whisper / OpenAI")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(Theme.textPrimary)
-                    Text("MIT License\n\nCopyright © 2022 OpenAI\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.")
-                        .font(.system(size: 12))
-                        .foregroundColor(Theme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-
-                    Divider()
-
-                    Text("WhisperKit / Argmax")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(Theme.textPrimary)
-                    Text("MIT License\n\nCopyright © 2023 Argmax, Inc.\n\nPermission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the \"Software\"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:\n\nThe above copyright notice and this permission notice shall be included in all copies or substantial portions of the Software.\n\nTHE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.")
-                        .font(.system(size: 12))
-                        .foregroundColor(Theme.textSecondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(22)
-            }
-        }
-        .frame(width: 480, height: 500)
-        .background(Theme.pageBackground)
-    }
-
     private var launchAtLoginToggle: some View {
         Toggle("", isOn: Binding(
             get: { launchAtLogin },
             set: { newValue in
                 LoginItem.isEnabled = newValue
-                // Re-read so the UI reflects the actual SMAppService
-                // status (the set could fail silently if SIP / TCC say
-                // no — in which case the toggle just snaps back).
                 launchAtLogin = LoginItem.isEnabled
             }
         ))
@@ -249,35 +200,91 @@ struct HomeView: View {
         .controlSize(.small)
     }
 
-    private var microphoneMenu: some View {
-        // Filter out Continuity Camera / iPhone mics — they appear in the
-        // device list but don't work reliably with AVAudioEngine.
-        let devices = AudioDeviceManager.listInputs().filter {
-            !$0.name.localizedCaseInsensitiveContains("iPhone")
+    /// Max recording duration — hard stop for stability; default/recommended 60 min.
+    private var maxDurationRow: some View {
+        HStack(alignment: .center, spacing: 12) {
+            Image(systemName: "timer")
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(Theme.textTertiary)
+                .frame(width: 16, alignment: .center)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Max duration")
+                    .font(.system(size: 13))
+                    .foregroundColor(Theme.textPrimary)
+                Text("Recommended \(Preferences.recommendedMaxDurationMinutes) min · 0 = no limit")
+                    .font(.system(size: 10))
+                    .foregroundColor(Theme.textTertiary)
+            }
+            Spacer(minLength: 8)
+            HStack(spacing: 5) {
+                TextField("60", text: $maxDurationField)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 13).monospacedDigit())
+                    .foregroundColor(Theme.textPrimary)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 44)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(Theme.surfaceMuted)
+                    .clipShape(RoundedRectangle(cornerRadius: 5, style: .continuous))
+                    .onSubmit { commitMaxDurationField() }
+                Text("min")
+                    .font(.system(size: 12))
+                    .foregroundColor(Theme.textSecondary)
+            }
         }
+        .frame(minHeight: 44)
+        .padding(.vertical, 4)
+        .onChange(of: maxDurationField) { _, newValue in
+            // Keep only digits while typing.
+            let filtered = newValue.filter(\.isNumber)
+            if filtered != newValue { maxDurationField = filtered }
+        }
+        .onDisappear { commitMaxDurationField() }
+    }
+
+    private func commitMaxDurationField() {
+        let minutes = Preferences.maxDurationMinutes(fromField: maxDurationField)
+        Preferences.maxDurationMinutes = minutes
+        maxDurationField = "\(minutes)"
+    }
+
+    private func refreshInputDevices() {
+        inputDevices = AudioDeviceManager.listInputsForPicker()
+        // Migrate stale / ephemeral prefs to system default.
+        if !Preferences.isSystemDefaultMicrophone(microphoneUID),
+           !inputDevices.contains(where: { $0.uid == microphoneUID }) {
+            microphoneUID = "default"
+        }
+    }
+
+    private var microphoneMenu: some View {
         let currentName: String = {
-            if microphoneUID == "default" { return "System default" }
-            return devices.first(where: { $0.uid == microphoneUID })?.name ?? "System default"
+            if Preferences.isSystemDefaultMicrophone(microphoneUID) { return "System default" }
+            if let d = inputDevices.first(where: { $0.uid == microphoneUID }) {
+                return d.displayName
+            }
+            return "System default"
         }()
         return Menu {
             Button {
                 microphoneUID = "default"
             } label: {
-                if microphoneUID == "default" {
+                if Preferences.isSystemDefaultMicrophone(microphoneUID) {
                     Label("System default", systemImage: "checkmark")
                 } else {
                     Text("System default")
                 }
             }
-            if !devices.isEmpty { Divider() }
-            ForEach(devices) { d in
+            if !inputDevices.isEmpty { Divider() }
+            ForEach(inputDevices) { d in
                 Button {
                     microphoneUID = d.uid
                 } label: {
                     if d.uid == microphoneUID {
-                        Label(d.name, systemImage: "checkmark")
+                        Label(d.displayName, systemImage: "checkmark")
                     } else {
-                        Text(d.name)
+                        Text(d.displayName)
                     }
                 }
             }
@@ -286,6 +293,7 @@ struct HomeView: View {
                 Text(currentName)
                     .font(.system(size: 13))
                     .foregroundColor(Theme.textSecondary)
+                    .lineLimit(1)
                 Image(systemName: "chevron.down")
                     .font(.system(size: 9, weight: .semibold))
                     .foregroundColor(Theme.textTertiary)
@@ -294,6 +302,7 @@ struct HomeView: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .fixedSize()
+        .onTapGesture { refreshInputDevices() }
     }
 
     private var languageMenu: some View {
@@ -341,7 +350,6 @@ struct HomeView: View {
                     .foregroundColor(Theme.textTertiary)
                 Spacer()
                 if !pipeline.recent.isEmpty {
-                    // Inline compact search field
                     HStack(spacing: 4) {
                         Image(systemName: "magnifyingglass")
                             .font(.system(size: 10))
@@ -441,812 +449,4 @@ struct HomeView: View {
         f.unitsStyle = .abbreviated
         return f
     }()
-}
-
-// MARK: - Right-side value style
-
-private extension Text {
-    func rowValueStyle() -> some View {
-        self.font(.system(size: 13))
-            .foregroundColor(Theme.textSecondary)
-    }
-}
-
-// MARK: - Language options
-//
-// Full set of languages officially supported by Whisper large-v3 /
-// large-v3-turbo — 99 entries plus an Auto-detect sentinel that
-// maps to nil in Transcriber. Sorted alphabetically by display name
-// after Auto-detect so users can find their language quickly.
-
-struct LanguageOption {
-    let code: String
-    let displayName: String
-
-    static let all: [LanguageOption] = {
-        let auto = LanguageOption(code: "auto", displayName: "Auto-detect")
-        let langs: [LanguageOption] = [
-            LanguageOption(code: "af",  displayName: "Afrikaans"),
-            LanguageOption(code: "sq",  displayName: "Albanian"),
-            LanguageOption(code: "am",  displayName: "Amharic"),
-            LanguageOption(code: "ar",  displayName: "Arabic"),
-            LanguageOption(code: "hy",  displayName: "Armenian"),
-            LanguageOption(code: "as",  displayName: "Assamese"),
-            LanguageOption(code: "az",  displayName: "Azerbaijani"),
-            LanguageOption(code: "ba",  displayName: "Bashkir"),
-            LanguageOption(code: "eu",  displayName: "Basque"),
-            LanguageOption(code: "be",  displayName: "Belarusian"),
-            LanguageOption(code: "bn",  displayName: "Bengali"),
-            LanguageOption(code: "bs",  displayName: "Bosnian"),
-            LanguageOption(code: "br",  displayName: "Breton"),
-            LanguageOption(code: "bg",  displayName: "Bulgarian"),
-            LanguageOption(code: "my",  displayName: "Burmese"),
-            LanguageOption(code: "yue", displayName: "Cantonese"),
-            LanguageOption(code: "ca",  displayName: "Catalan"),
-            LanguageOption(code: "zh",  displayName: "Chinese"),
-            LanguageOption(code: "hr",  displayName: "Croatian"),
-            LanguageOption(code: "cs",  displayName: "Czech"),
-            LanguageOption(code: "da",  displayName: "Danish"),
-            LanguageOption(code: "nl",  displayName: "Dutch"),
-            LanguageOption(code: "en",  displayName: "English"),
-            LanguageOption(code: "et",  displayName: "Estonian"),
-            LanguageOption(code: "fo",  displayName: "Faroese"),
-            LanguageOption(code: "fi",  displayName: "Finnish"),
-            LanguageOption(code: "fr",  displayName: "French"),
-            LanguageOption(code: "gl",  displayName: "Galician"),
-            LanguageOption(code: "ka",  displayName: "Georgian"),
-            LanguageOption(code: "de",  displayName: "German"),
-            LanguageOption(code: "el",  displayName: "Greek"),
-            LanguageOption(code: "gu",  displayName: "Gujarati"),
-            LanguageOption(code: "ht",  displayName: "Haitian Creole"),
-            LanguageOption(code: "ha",  displayName: "Hausa"),
-            LanguageOption(code: "haw", displayName: "Hawaiian"),
-            LanguageOption(code: "he",  displayName: "Hebrew"),
-            LanguageOption(code: "hi",  displayName: "Hindi"),
-            LanguageOption(code: "hu",  displayName: "Hungarian"),
-            LanguageOption(code: "is",  displayName: "Icelandic"),
-            LanguageOption(code: "id",  displayName: "Indonesian"),
-            LanguageOption(code: "it",  displayName: "Italian"),
-            LanguageOption(code: "ja",  displayName: "Japanese"),
-            LanguageOption(code: "jw",  displayName: "Javanese"),
-            LanguageOption(code: "kn",  displayName: "Kannada"),
-            LanguageOption(code: "kk",  displayName: "Kazakh"),
-            LanguageOption(code: "km",  displayName: "Khmer"),
-            LanguageOption(code: "ko",  displayName: "Korean"),
-            LanguageOption(code: "lo",  displayName: "Lao"),
-            LanguageOption(code: "la",  displayName: "Latin"),
-            LanguageOption(code: "lv",  displayName: "Latvian"),
-            LanguageOption(code: "ln",  displayName: "Lingala"),
-            LanguageOption(code: "lt",  displayName: "Lithuanian"),
-            LanguageOption(code: "lb",  displayName: "Luxembourgish"),
-            LanguageOption(code: "mk",  displayName: "Macedonian"),
-            LanguageOption(code: "mg",  displayName: "Malagasy"),
-            LanguageOption(code: "ms",  displayName: "Malay"),
-            LanguageOption(code: "ml",  displayName: "Malayalam"),
-            LanguageOption(code: "mt",  displayName: "Maltese"),
-            LanguageOption(code: "mi",  displayName: "Maori"),
-            LanguageOption(code: "mr",  displayName: "Marathi"),
-            LanguageOption(code: "mn",  displayName: "Mongolian"),
-            LanguageOption(code: "ne",  displayName: "Nepali"),
-            LanguageOption(code: "no",  displayName: "Norwegian"),
-            LanguageOption(code: "nn",  displayName: "Norwegian Nynorsk"),
-            LanguageOption(code: "oc",  displayName: "Occitan"),
-            LanguageOption(code: "ps",  displayName: "Pashto"),
-            LanguageOption(code: "fa",  displayName: "Persian"),
-            LanguageOption(code: "pl",  displayName: "Polish"),
-            LanguageOption(code: "pt",  displayName: "Portuguese"),
-            LanguageOption(code: "pa",  displayName: "Punjabi"),
-            LanguageOption(code: "ro",  displayName: "Romanian"),
-            LanguageOption(code: "ru",  displayName: "Russian"),
-            LanguageOption(code: "sa",  displayName: "Sanskrit"),
-            LanguageOption(code: "sr",  displayName: "Serbian"),
-            LanguageOption(code: "sn",  displayName: "Shona"),
-            LanguageOption(code: "sd",  displayName: "Sindhi"),
-            LanguageOption(code: "si",  displayName: "Sinhala"),
-            LanguageOption(code: "sk",  displayName: "Slovak"),
-            LanguageOption(code: "sl",  displayName: "Slovenian"),
-            LanguageOption(code: "so",  displayName: "Somali"),
-            LanguageOption(code: "es",  displayName: "Spanish"),
-            LanguageOption(code: "su",  displayName: "Sundanese"),
-            LanguageOption(code: "sw",  displayName: "Swahili"),
-            LanguageOption(code: "sv",  displayName: "Swedish"),
-            LanguageOption(code: "tl",  displayName: "Tagalog"),
-            LanguageOption(code: "tg",  displayName: "Tajik"),
-            LanguageOption(code: "ta",  displayName: "Tamil"),
-            LanguageOption(code: "tt",  displayName: "Tatar"),
-            LanguageOption(code: "te",  displayName: "Telugu"),
-            LanguageOption(code: "th",  displayName: "Thai"),
-            LanguageOption(code: "bo",  displayName: "Tibetan"),
-            LanguageOption(code: "tr",  displayName: "Turkish"),
-            LanguageOption(code: "tk",  displayName: "Turkmen"),
-            LanguageOption(code: "uk",  displayName: "Ukrainian"),
-            LanguageOption(code: "ur",  displayName: "Urdu"),
-            LanguageOption(code: "uz",  displayName: "Uzbek"),
-            LanguageOption(code: "vi",  displayName: "Vietnamese"),
-            LanguageOption(code: "cy",  displayName: "Welsh"),
-            LanguageOption(code: "yi",  displayName: "Yiddish"),
-            LanguageOption(code: "yo",  displayName: "Yoruba"),
-        ]
-        return [auto] + langs.sorted { $0.displayName < $1.displayName }
-    }()
-
-    static func displayName(for code: String) -> String {
-        all.first(where: { $0.code == code })?.displayName ?? code
-    }
-}
-
-// MARK: - Recent row
-//
-// One row of the Recent dictations list. Lifted out of HomeView so
-// each row can hold its own short-lived "copied" state without
-// polluting the parent.
-
-private struct RecentRow: View {
-    let dictation: Dictation
-    let metaText: String
-    @State private var copied: Bool = false
-    @State private var hovering: Bool = false
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 10) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("\u{201C}\(dictation.text)\u{201D}")
-                    .font(.system(size: 13))
-                    .foregroundColor(Theme.textPrimary)
-                    .lineLimit(2)
-                    .fixedSize(horizontal: false, vertical: true)
-                Text(metaText)
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.textTertiary)
-            }
-            Spacer(minLength: 8)
-            copyButton
-        }
-        .padding(.vertical, 11)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
-    }
-
-    private var copyButton: some View {
-        Button {
-            let pb = NSPasteboard.general
-            pb.clearContents()
-            pb.setString(dictation.text, forType: .string)
-            copied = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + 1.4) { copied = false }
-        } label: {
-            Image(systemName: copied ? "checkmark" : "doc.on.doc")
-                .font(.system(size: 11, weight: .medium))
-                .foregroundColor(copied ? Theme.success : Theme.textTertiary)
-                .frame(width: 24, height: 24)
-                .background(hovering || copied ? Theme.surfaceMuted : Color.clear)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .help(copied ? "Copied" : "Copy to clipboard")
-    }
-}
-
-// MARK: - Searchable language picker
-//
-// Popover that opens when the user clicks the Language row's value.
-// Hosts a SearchField at the top + a scrolling list of matching
-// languages below. Type-to-filter is the primary interaction; clicking
-// a row selects + dismisses. The picker auto-focuses the search field
-// on open so the user can start typing immediately.
-
-private struct LanguagePicker: View {
-    @Binding var query: String
-    let selected: String
-    let onSelect: (String) -> Void
-
-    @FocusState private var searchFocused: Bool
-
-    private var matches: [LanguageOption] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return LanguageOption.all }
-        return LanguageOption.all.filter {
-            $0.displayName.lowercased().contains(q)
-                || $0.code.lowercased().hasPrefix(q)
-        }
-    }
-
-    var body: some View {
-        VStack(spacing: 0) {
-            // Search field
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(Theme.textTertiary)
-                TextField("Search languages", text: $query)
-                    .textFieldStyle(.plain)
-                    .font(.system(size: 13))
-                    .focused($searchFocused)
-                    .onSubmit {
-                        if let first = matches.first { onSelect(first.code) }
-                    }
-                if !query.isEmpty {
-                    Button { query = "" } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11))
-                            .foregroundColor(Theme.textTertiary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 10)
-            .background(Theme.cardBackground)
-
-            Rectangle()
-                .fill(Theme.divider)
-                .frame(height: 0.5)
-
-            // Results
-            ScrollView {
-                LazyVStack(spacing: 0) {
-                    if matches.isEmpty {
-                        Text("No matches")
-                            .font(.system(size: 12))
-                            .foregroundColor(Theme.textTertiary)
-                            .padding(.vertical, 18)
-                            .frame(maxWidth: .infinity)
-                    } else {
-                        ForEach(matches, id: \.code) { opt in
-                            row(opt)
-                        }
-                    }
-                }
-            }
-            .frame(maxHeight: 320)
-            .background(Theme.cardBackground)
-        }
-        .frame(width: 260)
-        .onAppear { searchFocused = true }
-    }
-
-    private func row(_ opt: LanguageOption) -> some View {
-        Button {
-            onSelect(opt.code)
-        } label: {
-            HStack(spacing: 8) {
-                Text(opt.displayName)
-                    .font(.system(size: 13))
-                    .foregroundColor(Theme.textPrimary)
-                Spacer()
-                if opt.code == selected {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundColor(Theme.accent)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 7)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(LanguageRowButtonStyle())
-    }
-}
-
-private struct LanguageRowButtonStyle: ButtonStyle {
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .background(configuration.isPressed ? Theme.surfaceMuted : Color.clear)
-            .background(HoverHighlight())
-    }
-}
-
-/// Background view that highlights on hover — gives the language rows
-/// a normal menu-row feel without needing an explicit @State per row.
-private struct HoverHighlight: View {
-    @State private var hovering = false
-    var body: some View {
-        Rectangle()
-            .fill(hovering ? Theme.surfaceMuted : Color.clear)
-            .onHover { hovering = $0 }
-    }
-}
-
-// MARK: - Status pill
-
-private struct StatusPill: View {
-    let isReady: Bool
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Circle()
-                .fill(isReady ? Theme.success : Theme.warning)
-                .frame(width: 6, height: 6)
-            Text(isReady ? "Ready" : "Setup needed")
-                .font(.system(size: 12, weight: .medium))
-                .foregroundColor(Theme.textPrimary)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 4)
-        .background(Theme.cardBackground)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Theme.divider, lineWidth: 0.5))
-    }
-}
-
-// MARK: - Dark mode toggle
-
-private struct DarkModeToggle: View {
-    @Binding var isOn: Bool
-
-    var body: some View {
-        HStack(spacing: 0) {
-            segment(systemName: "sun.max.fill", active: !isOn) { isOn = false }
-            segment(systemName: "moon.fill",   active:  isOn) { isOn = true  }
-        }
-        .padding(2)
-        .background(Theme.cardBackground)
-        .clipShape(Capsule())
-        .overlay(Capsule().stroke(Theme.divider, lineWidth: 0.5))
-    }
-
-    private func segment(systemName: String, active: Bool, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: systemName)
-                .font(.system(size: 10, weight: .semibold))
-                .frame(width: 20, height: 16)
-                .foregroundColor(active ? Theme.cardBackground : Theme.textTertiary)
-                .background(active ? Theme.accent : Color.clear)
-                .clipShape(Capsule())
-                .contentShape(Capsule())
-        }
-        .buttonStyle(.plain)
-    }
-}
-
-// MARK: - Conflict banner
-
-private struct ConflictBanner: View {
-    let behavior: FnConflictDetector.AppleFnBehavior
-    let onFix: () -> Void
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(Theme.warning)
-                .font(.system(size: 12))
-            VStack(alignment: .leading, spacing: 2) {
-                Text("Apple's Fn key handler is active")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Theme.textPrimary)
-                Text("Set \"Press 🌐 key to\" to Do Nothing in Keyboard settings.")
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Button("Open", action: onFix)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-        }
-        .padding(10)
-        .background(Theme.warning.opacity(0.10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Theme.warning.opacity(0.3), lineWidth: 0.5)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-// MARK: - Error banner
-//
-// Dismissible red banner for a transient failure from the dictation
-// pipeline (couldn't start recording, model load failed, transcription
-// errored). Driven by DictationPipeline.lastErrorMessage; the X clears it.
-
-struct ErrorBanner: View {
-    let message: String
-    let onDismiss: () -> Void
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: "exclamationmark.octagon.fill")
-                .foregroundColor(Theme.danger)
-                .font(.system(size: 12))
-            Text(message)
-                .font(.system(size: 12))
-                .foregroundColor(Theme.textPrimary)
-                .fixedSize(horizontal: false, vertical: true)
-            Spacer(minLength: 8)
-            Button(action: onDismiss) {
-                Image(systemName: "xmark")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(Theme.textTertiary)
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help("Dismiss")
-        }
-        .padding(10)
-        .background(Theme.danger.opacity(0.10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Theme.danger.opacity(0.3), lineWidth: 0.5)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-// MARK: - Permission banner
-//
-// Reusable yellow banner for any missing TCC permission. Used by
-// HomeView to surface Microphone, Input Monitoring, and Accessibility
-// problems when the user is past onboarding but later revoked or
-// macOS has invalidated one of the grants.
-
-struct PermissionBanner: View {
-    let title: String
-    let detail: String
-    let actionTitle: String
-    let action: () -> Void
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Image(systemName: "exclamationmark.triangle.fill")
-                .foregroundColor(Theme.warning)
-                .font(.system(size: 12))
-            VStack(alignment: .leading, spacing: 2) {
-                Text(title)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Theme.textPrimary)
-                Text(detail)
-                    .font(.system(size: 11))
-                    .foregroundColor(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            Spacer()
-            Button(actionTitle, action: action)
-                .buttonStyle(.bordered)
-                .controlSize(.small)
-        }
-        .padding(10)
-        .background(Theme.warning.opacity(0.10))
-        .overlay(
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Theme.warning.opacity(0.3), lineWidth: 0.5)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-}
-
-// MARK: - Installing view
-//
-// Shown once per machine, after onboarding, while the speech model is
-// fetched and prepared. Two real phases driven by Transcriber.status:
-//
-//   ① .downloading(progress) — one-time ~1.5 GB model download, with a
-//      real progress bar fed by WhisperKit's download callback.
-//   ② .preparing             — CoreML specialization/compile for this
-//      Mac. No fine-grained progress exists, so the bar is indeterminate.
-//
-// On .error we show a blocking "Try again" state — the user can NOT
-// reach the main window until the model is fully downloaded AND compiled
-// (Transcriber reports .ready). That gating is the whole point: a half-
-// installed app would be a sour first experience.
-
-struct InstallingView: View {
-    @ObservedObject var transcriber: Transcriber
-    let onComplete: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            heroHeader
-                .padding(.horizontal, 28)
-                .padding(.top, 28)
-                .padding(.bottom, 28)
-
-            card
-                .padding(.horizontal, 22)
-
-            Spacer()
-
-            footnote
-                .padding(.horizontal, 28)
-                .padding(.bottom, 22)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.pageBackground)
-        .onAppear { handle(status: transcriber.status, firstAppear: true) }
-        .onChange(of: transcriber.status) { _, newStatus in
-            handle(status: newStatus, firstAppear: false)
-        }
-    }
-
-    // MARK: - Phase card
-
-    @ViewBuilder
-    private var card: some View {
-        switch transcriber.status {
-        case .error(let message):
-            errorCard(message)
-        case .downloading(let progress):
-            downloadingCard(progress)
-        default:
-            // .preparing / .idle / .transcribing / .ready (brief)
-            preparingCard
-        }
-    }
-
-    private func downloadingCard(_ progress: Double) -> some View {
-        VStack(alignment: .leading, spacing: 14) {
-            ProgressView(value: progress)
-                .progressViewStyle(.linear)
-                .tint(Theme.accent)
-            HStack(alignment: .firstTextBaseline) {
-                Text("Downloading speech model · one time, ~1.5 GB")
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.textSecondary)
-                Spacer()
-                Text("\(Int(progress * 100))%")
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(Theme.textSecondary)
-                    .monospacedDigit()
-            }
-        }
-        .modifier(InstallCard())
-    }
-
-    private var preparingCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            ProgressView()
-                .progressViewStyle(.linear)
-                .tint(Theme.accent)
-            Text("Preparing the model for your Mac — this can take a minute or two the first time.")
-                .font(.system(size: 12))
-                .foregroundColor(Theme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .modifier(InstallCard())
-    }
-
-    private func errorCard(_ message: String) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack(spacing: 8) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 13))
-                    .foregroundColor(Theme.warning)
-                Text("Setup couldn't finish")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
-            }
-            Text(message)
-                .font(.system(size: 12))
-                .foregroundColor(Theme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-            Button(action: retry) {
-                Text("Try again")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(Theme.cardBackground)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 8)
-                    .background(Theme.accent)
-                    .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .padding(.top, 2)
-        }
-        .modifier(InstallCard())
-    }
-
-    private var heroHeader: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
-                Text("Installing Flowa")
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var footnote: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "lock.shield")
-                .font(.system(size: 11))
-                .foregroundColor(Theme.textTertiary)
-            Text("Runs entirely on-device. No audio leaves your Mac.")
-                .font(.system(size: 11))
-                .foregroundColor(Theme.textTertiary)
-        }
-        .frame(maxWidth: .infinity, alignment: .center)
-    }
-
-    // MARK: - Status handling
-
-    private func handle(status: Transcriber.Status, firstAppear: Bool) {
-        switch status {
-        case .ready:
-            // Brief beat so a finished state is visible before sliding home.
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) { onComplete() }
-        case .idle:
-            // prewarm() normally kicks the load at launch; if it somehow
-            // didn't, start it now so the user is never stuck on idle.
-            if firstAppear { retry() }
-        default:
-            break
-        }
-    }
-
-    private func retry() {
-        Task { await transcriber.loadIfNeeded() }
-    }
-}
-
-/// Shared chrome for the install screen's single card.
-private struct InstallCard: ViewModifier {
-    func body(content: Content) -> some View {
-        content
-            .padding(18)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(Theme.cardBackground)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(Theme.divider, lineWidth: 0.5)
-            )
-    }
-}
-
-// MARK: - Onboarding view
-//
-// Shown on first launch (and any time a fresh install hasn't been
-// granted all three TCC permissions yet). Walks the user through
-// Microphone → Input Monitoring → Accessibility one by one. Each row
-// shows the live status; the Get Started button at the bottom only
-// activates once all three are green.
-
-struct OnboardingView: View {
-    @ObservedObject var permissions: PermissionChecker
-    let onComplete: () -> Void
-
-    var body: some View {
-        VStack(spacing: 0) {
-            heroHeader
-                .padding(.horizontal, 28)
-                .padding(.top, 28)
-                .padding(.bottom, 22)
-
-            VStack(spacing: 10) {
-                step(
-                    index: 1,
-                    icon: "mic.fill",
-                    title: "Microphone",
-                    detail: "Captures your voice so Whisper can transcribe it locally on your Mac.",
-                    granted: permissions.microphoneGranted,
-                    actionTitle: "Allow microphone",
-                    action: permissions.requestMicrophone
-                )
-                step(
-                    index: 2,
-                    icon: "command",
-                    title: "Input Monitoring",
-                    detail: "Lets Flowa see when you press the Fn key. Doesn't read what you type.",
-                    granted: permissions.inputMonitoringGranted,
-                    actionTitle: "Open Settings",
-                    action: permissions.requestInputMonitoring
-                )
-                step(
-                    index: 3,
-                    icon: "lock.shield.fill",
-                    title: "Accessibility",
-                    detail: "Lets Flowa paste your transcripts into the focused app. Cmd+V only — nothing else.",
-                    granted: permissions.accessibilityGranted,
-                    actionTitle: "Allow accessibility",
-                    action: permissions.requestAccessibility
-                )
-            }
-            .padding(.horizontal, 22)
-
-            Spacer(minLength: 12)
-
-            Button(action: onComplete) {
-                Text(permissions.allGranted ? "Get started" : "Waiting for all three…")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(permissions.allGranted ? Theme.cardBackground : Theme.textTertiary)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
-                    .background(permissions.allGranted ? Theme.accent : Theme.surfaceMuted)
-                    .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-            }
-            .buttonStyle(.plain)
-            .disabled(!permissions.allGranted)
-            .padding(.horizontal, 22)
-            .padding(.bottom, 22)
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(Theme.pageBackground)
-    }
-
-    // MARK: - Hero
-
-    private var heroHeader: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 8) {
-                Image(systemName: "waveform")
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
-                Text("Welcome to Flowa")
-                    .font(.system(size: 19, weight: .semibold))
-                    .foregroundColor(Theme.textPrimary)
-            }
-            Text("Voice dictation that runs entirely on your Mac. Three quick permissions and you're set.")
-                .font(.system(size: 13))
-                .foregroundColor(Theme.textSecondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    // MARK: - Step row
-
-    private func step(index: Int,
-                      icon: String,
-                      title: String,
-                      detail: String,
-                      granted: Bool,
-                      actionTitle: String,
-                      action: @escaping () -> Void) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            // Status dot + step number
-            ZStack {
-                Circle()
-                    .fill(granted ? Theme.success : Theme.surfaceMuted)
-                    .frame(width: 26, height: 26)
-                if granted {
-                    Image(systemName: "checkmark")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundColor(Theme.cardBackground)
-                } else {
-                    Text("\(index)")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(Theme.textSecondary)
-                }
-            }
-            .padding(.top, 2)
-
-            // Title + detail
-            VStack(alignment: .leading, spacing: 3) {
-                HStack(spacing: 6) {
-                    Image(systemName: icon)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(Theme.textTertiary)
-                    Text(title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(Theme.textPrimary)
-                }
-                Text(detail)
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.textSecondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            Spacer(minLength: 8)
-
-            if !granted {
-                Button(actionTitle, action: action)
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .fixedSize()
-            }
-        }
-        .padding(12)
-        .background(Theme.cardBackground)
-        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(granted ? Theme.success.opacity(0.4) : Theme.divider, lineWidth: 0.5)
-        )
-    }
 }

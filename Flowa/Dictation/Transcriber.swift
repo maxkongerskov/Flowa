@@ -1,69 +1,49 @@
 // Transcriber.swift
 // Flowa
 //
-// WhisperKit wrapper. Handles model loading (downloads on first use),
-// transcribes a WAV file, returns plain text. Async/await throughout.
-//
-// Requires the WhisperKit Swift Package to be added to the project:
-//   File → Add Package Dependencies… → https://github.com/argmaxinc/WhisperKit
-// then add the WhisperKit product to the Flowa app target.
-//
-// Without the dependency the `import WhisperKit` below will fail to
-// compile — that's the intended forcing function.
+// WhisperKit wrapper. The CoreML speech model ships inside the app bundle
+// (~1.5 GB). First launch on each Mac only specializes it for this chip
+// (typically ~1–2 minutes, offline). No network download.
 
 import Foundation
 import Combine
-
-#if canImport(WhisperKit)
 import WhisperKit
-#endif
 
 @MainActor
 final class Transcriber: ObservableObject {
 
     enum Status: Equatable {
         case idle
-        case downloading(progress: Double)   // 0...1 while the model downloads
-        case preparing                       // CoreML specialize/compile + tokenizer load
+        /// CoreML specialize / load. `progress` is 0...1 over
+        /// `expectedPrepareSeconds` (~2 min countdown in the install UI).
+        case preparing(progress: Double)
         case ready
         case transcribing
         case error(String)
     }
 
+    /// Install countdown length shown to the user (~2 minutes).
+    static let expectedPrepareSeconds: TimeInterval = 120
+
     @Published private(set) var status: Status = .idle
 
-    /// Fixed to large-v3-turbo — OpenAI's accelerated large-v3
-    /// variant released Sept 2024. ≈1.5 GB on disk, 6–8× faster on
-    /// Apple Silicon than vanilla large-v3 with essentially identical
-    /// accuracy on the languages we care about.
-    ///
-    /// The CoreML model is *downloaded once* on first launch from the
-    /// WhisperKit model hub (≈1.5 GB) — see `loadIfNeeded()`. We keep it
-    /// out of the app bundle so the binary stays small. The tiny (~3 MB)
-    /// tokenizer *is* bundled, so only the model itself needs the network.
-    /// If a bundled model copy is ever present we use it and skip the
-    /// download, so the app still works fully offline when shipped that way.
-    let modelName: String = "openai_whisper-large-v3-v20240930_turbo"
+    let modelName: String = SpeechModelStore.modelVariant
 
-    /// Which model name we're currently holding open. Kept as a single
-    /// variable for future-proofing even though modelName is now const.
-    private var loadedModelName: String?
+    /// Last decode failure (model was loaded; audio could not be transcribed).
+    private(set) var lastDecodeErrorMessage: String?
 
-    /// Path to the bundled CoreML model folder inside the .app, or
-    /// nil if missing (dev builds without the assets, corrupted
-    /// install, etc.).
+    private var isLoaded: Bool = false
+    private var loadTask: Task<Void, Never>?
+    private var prepareProgressTask: Task<Void, Never>?
+
     private static var bundledModelFolderPath: String? {
         Bundle.main.url(
-            forResource: "openai_whisper-large-v3-v20240930_turbo",
+            forResource: SpeechModelStore.modelVariant,
             withExtension: nil,
             subdirectory: "Models"
         )?.path
     }
 
-    /// URL to the bundled tokenizer folder inside the .app. WhisperKit
-    /// resolves the Whisper tokenizer (vocab + special tokens etc.)
-    /// separately from the CoreML model files — both must be local
-    /// for first-run dictation to work offline.
     private static var bundledTokenizerFolderURL: URL? {
         Bundle.main.url(
             forResource: "whisper-large-v3",
@@ -72,112 +52,164 @@ final class Transcriber: ObservableObject {
         )
     }
 
-    #if canImport(WhisperKit)
     private var pipe: WhisperKit?
-    #endif
 
-    /// Loads (or reloads) the model. Safe to call multiple times — a
-    /// repeat call is a no-op once the *current* `modelName` is loaded.
-    /// If the user picks a different model in the UI, we drop the old
-    /// pipe and download / load the new one here.
+    var isReady: Bool {
+        isLoaded && pipe != nil && (status == .ready || status == .transcribing)
+    }
+
+    /// After onboarding, Home stays blocked until the engine is ready.
+    var needsSetup: Bool {
+        switch status {
+        case .ready, .transcribing:
+            return false
+        case .error, .preparing:
+            return true
+        case .idle:
+            return !isLoaded
+        }
+    }
+
     func loadIfNeeded() async {
-        #if canImport(WhisperKit)
-        let wanted = modelName
-        if pipe != nil, loadedModelName == wanted { return }
+        if pipe != nil, isLoaded {
+            if status != .ready && status != .transcribing {
+                status = .ready
+            }
+            return
+        }
+        if let loadTask {
+            await loadTask.value
+            return
+        }
+        let task = Task { @MainActor in
+            await self.performLoad()
+        }
+        loadTask = task
+        await task.value
+        loadTask = nil
+    }
+
+    /// Drop the in-memory pipeline so the next load re-prepares from the bundle.
+    /// `clearCache` only wipes legacy download folders (not the bundled model).
+    func resetForReinstall(clearCache: Bool) {
+        loadTask?.cancel()
+        loadTask = nil
+        stopPrepareProgress()
         pipe = nil
+        isLoaded = false
+        lastDecodeErrorMessage = nil
+        if clearCache {
+            SpeechModelStore.clearDownloadedModels()
+        }
+        Preferences.markSpeechModelNotInstalled()
+        status = .idle
+    }
+
+    private func performLoad() async {
+        if pipe != nil, isLoaded {
+            status = .ready
+            Preferences.markSpeechModelInstalled()
+            return
+        }
+        pipe = nil
+        isLoaded = false
 
         let started = Date()
         do {
-            // 1. Resolve the model folder. Prefer a bundled copy if present
-            //    (builds that still ship it); otherwise download it once
-            //    from the WhisperKit hub, reporting live progress so the
-            //    install screen can show a real download bar.
-            let modelFolder: String
-            if let bundled = Self.bundledModelFolderPath {
-                modelFolder = bundled
-            } else {
-                status = .downloading(progress: 0)
-                let url = try await WhisperKit.download(
-                    variant: wanted,
-                    progressCallback: { progress in
-                        Task { @MainActor [weak self] in
-                            self?.status = .downloading(progress: progress.fractionCompleted)
-                        }
-                    }
+            guard let modelFolder = SpeechModelStore.resolveLocalModelFolder(
+                bundledPath: Self.bundledModelFolderPath
+            ) else {
+                throw NSError(
+                    domain: "Flowa.Transcriber",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Speech engine is missing from this app. Reinstall Flowa from the original package."]
                 )
-                modelFolder = url.path
             }
 
-            // 2. Load + specialize the CoreML model for this Mac. With
-            //    prewarm+load, this only returns once compilation is done —
-            //    so callers can treat `.ready` as "fully usable", which is
-            //    what gates the user into the main window.
-            status = .preparing
+            startPrepareProgress()
             let config = WhisperKitConfig(
-                model: wanted,
+                model: modelName,
                 modelFolder: modelFolder,
                 tokenizerFolder: Self.bundledTokenizerFolderURL,
                 verbose: false,
                 logLevel: .error,
                 prewarm: true,
                 load: true,
-                download: false                       // already resolved above
+                download: false
             )
             pipe = try await WhisperKit(config)
-            loadedModelName = wanted
+            stopPrepareProgress()
+            isLoaded = true
             status = .ready
+            Preferences.markSpeechModelInstalled()
             let elapsed = Int(Date().timeIntervalSince(started))
-            print("[Flowa] Whisper: \(wanted) ready in \(elapsed)s")
+            print("[Flowa] Whisper ready in \(elapsed)s (bundled) from \(modelFolder)")
         } catch {
+            stopPrepareProgress()
+            pipe = nil
+            isLoaded = false
+            Preferences.markSpeechModelNotInstalled()
             status = .error(Self.friendlyLoadError(error))
-            print("[Flowa] Whisper: FAILED to load \(wanted): \(error.localizedDescription)")
+            print("[Flowa] Whisper FAILED: \(error.localizedDescription)")
         }
-        #else
-        status = .error("WhisperKit not added. File → Add Package Dependencies → https://github.com/argmaxinc/WhisperKit")
-        #endif
     }
 
-    /// Map a load/download failure to a short, user-facing sentence for
-    /// the install screen. A missing network connection is by far the
-    /// most common cause on first launch.
+    private func startPrepareProgress() {
+        stopPrepareProgress()
+        status = .preparing(progress: 0)
+        let duration = Self.expectedPrepareSeconds
+        prepareProgressTask = Task { @MainActor [weak self] in
+            let start = Date()
+            while !Task.isCancelled {
+                guard let self else { return }
+                let fraction = Date().timeIntervalSince(start) / duration
+                // Cap under 1.0 until WhisperKit actually finishes.
+                if case .preparing = self.status {
+                    // Allow progress to reach 1.0 so the UI countdown can
+                    // show “Almost done…” if CoreML takes longer than 2 min.
+                    self.status = .preparing(progress: min(1.0, max(0, fraction)))
+                } else {
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 200_000_000)
+            }
+        }
+    }
+
+    private func stopPrepareProgress() {
+        prepareProgressTask?.cancel()
+        prepareProgressTask = nil
+    }
+
     private static func friendlyLoadError(_ error: Error) -> String {
-        let ns = error as NSError
-        if ns.domain == NSURLErrorDomain {
-            return "Couldn't download the speech model. Check your internet connection and try again."
+        let text = error.localizedDescription.lowercased()
+        if text.contains("space") || text.contains("disk") {
+            return "Couldn't finish installation — your Mac may be low on disk space."
         }
-        return "Couldn't prepare the speech model. Please try again."
+        if text.contains("missing") {
+            return error.localizedDescription
+        }
+        return "Couldn't finish installation. Try again, or use Repair Flowa from the menu bar."
     }
 
-    /// Reads the user's language preference from UserDefaults each call,
-    /// so flipping the Home page's Language card takes effect on the
-    /// next dictation without restarting. Values are ISO 639-1 codes
-    /// ("en", "da", …) or the sentinel "auto" which maps to nil (let
-    /// Whisper detect — unreliable on short utterances, opt-in).
-    var preferredLanguage: String? {
-        let code = UserDefaults.standard.string(forKey: "flowa.language") ?? "en"
-        return code == "auto" ? nil : code
-    }
-
-    /// Transcribe a single WAV file. Returns plain text, or nil if
-    /// nothing intelligible was captured.
-    func transcribe(wavFile: URL) async -> String? {
-        #if canImport(WhisperKit)
+    func transcribe(wavFile: URL, language: String?) async -> String? {
+        lastDecodeErrorMessage = nil
         await loadIfNeeded()
-        guard let pipe else { return nil }
+        guard let pipe else {
+            if case .error(let message) = status {
+                lastDecodeErrorMessage = message
+            } else {
+                lastDecodeErrorMessage = "Speech engine isn't ready yet."
+            }
+            return nil
+        }
         status = .transcribing
         do {
-            // The critical bit: WhisperKit's default DecodingOptions
-            // assumes English. To unlock the multilingual model we
-            // either pass `language: nil` (auto-detect) or set a
-            // specific code like "da". Without this Whisper will
-            // happily phonetically map Danish words to English.
-            // Only override the fields that matter for multilingual.
-            // Everything else stays on WhisperKit's defaults — that
-            // avoids parameter-name mismatches across versions.
             var options = DecodingOptions()
             options.task = .transcribe
-            options.language = preferredLanguage
-            options.detectLanguage = (preferredLanguage == nil)
+            options.language = language
+            options.detectLanguage = (language == nil)
             let results = try await pipe.transcribe(audioPath: wavFile.path,
                                                      decodeOptions: options)
             let text = results.map(\TranscriptionResult.text).joined(separator: " ")
@@ -185,12 +217,9 @@ final class Transcriber: ObservableObject {
             status = .ready
             return text.isEmpty ? nil : text
         } catch {
-            status = .error("Transcription failed: \(error.localizedDescription)")
+            lastDecodeErrorMessage = "Transcription failed: \(error.localizedDescription)"
+            status = isLoaded ? .ready : .error(lastDecodeErrorMessage ?? "Transcription failed.")
             return nil
         }
-        #else
-        status = .error("WhisperKit dependency missing.")
-        return nil
-        #endif
     }
 }

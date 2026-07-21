@@ -26,8 +26,12 @@ DerivedData/
 .build/
 Packages/
 
-# Speech model — downloaded at runtime, never bundled or committed (~1.5 GB)
+# Speech model ships in the app (~1.5 GB) but is too large for git
+# (AudioEncoder weights ~1.2 GB). Keep local for Archive/notarize builds.
 Flowa/Models/openai_whisper-large-v3-v20240930_turbo/
+
+# Local export / notarize output
+build/
 
 # Backups
 *.bak

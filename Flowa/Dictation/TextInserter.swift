@@ -6,11 +6,11 @@
 //   1. ALWAYS write the transcript to the system clipboard. Even if
 //      everything else fails, the user can manually Cmd+V it.
 //   2. If a target app was captured at Fn-press time AND Accessibility
-//      permission is granted, also synthesise Cmd+V into that app so
-//      the paste lands without manual intervention.
+//      is trusted, synthesise Cmd+V into that app.
 //
-// Without Accessibility the synthesised Cmd+V is silently dropped by
-// macOS; we don't fight it — the clipboard write is the fallback.
+// Clipboard is intentionally left holding the transcript (no timed
+// restore). Restoring after a short delay races slow apps and can
+// erase the paste source before they read it.
 
 import Foundation
 import AppKit
@@ -18,49 +18,48 @@ import ApplicationServices
 
 enum TextInserter {
 
-    /// Write `text` to the clipboard and, if possible, paste it into
-    /// `targetApp`. Returns true if the clipboard write succeeded
-    /// (which is the floor of "success" — the user can always Cmd+V).
-    @discardableResult
-    static func paste(_ text: String, targetApp: NSRunningApplication? = nil) -> Bool {
-        guard !text.isEmpty else { return false }
-        let pb = NSPasteboard.general
+    enum PasteOutcome: Equatable {
+        case clipboardOnly
+        case pasted(appName: String?)
+        case accessibilityMissing
+        case failed
+    }
 
-        // Snapshot so we can restore the user's clipboard later — but
-        // only if nothing else writes to it in the meantime.
-        let snapshot = ClipboardSnapshot(pasteboard: pb)
+    /// Write `text` to the clipboard and, if possible, paste it into
+    /// `targetApp`. Always leaves the transcript on the clipboard.
+    @discardableResult
+    static func paste(_ text: String, targetApp: NSRunningApplication? = nil) -> PasteOutcome {
+        guard !text.isEmpty else { return .failed }
+        let pb = NSPasteboard.general
 
         pb.clearContents()
         let writeOK = pb.setString(text, forType: .string)
-        let countAfterOurWrite = pb.changeCount
+        guard writeOK else { return .failed }
 
-        // If we have no target, we're done: text is on the clipboard.
         guard let target = targetApp, !target.isTerminated else {
             #if DEBUG
             print("[Flowa][paste] no target app — text is on clipboard only")
             #endif
-            return writeOK
+            return .clipboardOnly
+        }
+
+        guard AXIsProcessTrusted() else {
+            #if DEBUG
+            print("[Flowa][paste] Accessibility not granted — clipboard only")
+            #endif
+            return .accessibilityMissing
         }
 
         #if DEBUG
         print("[Flowa][paste] pasting into \(target.localizedName ?? "?") (pid=\(target.processIdentifier))")
         #endif
-        // Re-activate the target so the synthetic Cmd+V lands in the
-        // right window even if focus has drifted during transcription.
         target.activate(options: [])
 
-        // Wait for activation to take effect, then synth Cmd+V, then
-        // restore the clipboard if it hasn't been touched by anyone
-        // else in the meantime.
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+        // Slightly longer activation settle than before; no clipboard restore.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.12) {
             simulateCmdV()
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.30) {
-                if pb.changeCount == countAfterOurWrite {
-                    snapshot.restore(to: pb)
-                }
-            }
         }
-        return writeOK
+        return .pasted(appName: target.localizedName)
     }
 
     // MARK: - Cmd+V synth
@@ -81,47 +80,9 @@ enum TextInserter {
         vDown.flags = .maskCommand
         vUp.flags   = .maskCommand
 
-        // Post to the session event tap — reaches whichever app is
-        // currently key (we re-activated the target just before this call).
         cmdDown.post(tap: .cgSessionEventTap)
         vDown.post(tap: .cgSessionEventTap)
         vUp.post(tap: .cgSessionEventTap)
         cmdUp.post(tap: .cgSessionEventTap)
-    }
-}
-
-// MARK: - Clipboard snapshot
-
-private struct ClipboardSnapshot {
-    /// All pasteboard items captured by type+payload. Restoring
-    /// preserves richer content (RTF, images, file URLs) when the
-    /// user's clipboard had something other than plain text.
-    let items: [[NSPasteboard.PasteboardType: Data]]
-
-    init(pasteboard: NSPasteboard) {
-        var snap: [[NSPasteboard.PasteboardType: Data]] = []
-        for item in pasteboard.pasteboardItems ?? [] {
-            var dict: [NSPasteboard.PasteboardType: Data] = [:]
-            for type in item.types {
-                if let data = item.data(forType: type) {
-                    dict[type] = data
-                }
-            }
-            snap.append(dict)
-        }
-        self.items = snap
-    }
-
-    func restore(to pasteboard: NSPasteboard) {
-        guard !items.isEmpty else { return }
-        pasteboard.clearContents()
-        let restored = items.map { dict -> NSPasteboardItem in
-            let item = NSPasteboardItem()
-            for (type, data) in dict {
-                item.setData(data, forType: type)
-            }
-            return item
-        }
-        pasteboard.writeObjects(restored)
     }
 }

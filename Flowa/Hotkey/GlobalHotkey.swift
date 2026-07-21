@@ -2,8 +2,8 @@
 // Flowa
 //
 // Detect the Fn key globally via CGEventTap and treat each press as a
-// toggle: the first press starts recording, the next press commits.
-// The listening-state hooks drive FloatingPanel show/hide.
+// toggle: first press starts recording, next press commits.
+// Owns the floating panel only — DictationPipeline is injected from the app.
 
 import Foundation
 import AppKit
@@ -12,27 +12,21 @@ import SwiftUI
 @MainActor
 final class GlobalHotkey: ObservableObject {
 
+    /// Single recording session state (replaces dual recordMode + isListening).
+    enum Session: Equatable {
+        case idle
+        case recording
+    }
+
     @Published var isAuthorized: Bool = false
-    @Published var isListening:  Bool = false
+    @Published private(set) var session: Session = .idle
 
-    /// Owned pipeline — audio capture, Whisper transcription, paste.
-    /// Public so views (and the Flow Bar) can bind to its published
-    /// audio level for the live waveform.
-    let pipeline = DictationPipeline()
+    /// Convenience for UI that only needs a boolean.
+    var isListening: Bool { session == .recording }
 
-    // Gesture model:
-    //
-    //   TAP (any press + release):
-    //     → if not recording: show bar, start recording.
-    //     → if recording: commit, transcribe, paste.
-    //
-    //   X on pill → cancel.
+    /// Injected domain pipeline — not owned here.
+    let pipeline: DictationPipeline
 
-    // Recording mode
-    private enum RecordMode { case none, toggle }
-    private var recordMode: RecordMode = .none
-
-    // State
     private var eventTap: CFMachPort?
     nonisolated(unsafe) fileprivate var eventTapUnsafe: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
@@ -53,12 +47,12 @@ final class GlobalHotkey: ObservableObject {
         }
     }()
 
+    init(pipeline: DictationPipeline) {
+        self.pipeline = pipeline
+    }
+
     // MARK: - Lifecycle
 
-    /// Tear down the event tap so a subsequent `start()` rebuilds it
-    /// against the current TCC permission state. Used when Input
-    /// Monitoring is granted *after* launch — the old tap stays dead
-    /// even though permissions are now correct.
     func stop() {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
@@ -72,9 +66,6 @@ final class GlobalHotkey: ObservableObject {
         isAuthorized = false
     }
 
-    /// Convenience: stop + start. Call after granting Input Monitoring
-    /// or Accessibility from System Settings so the hotkey actually
-    /// becomes live without quitting the app.
     func restart() {
         stop()
         start()
@@ -90,9 +81,6 @@ final class GlobalHotkey: ObservableObject {
             let me = Unmanaged<GlobalHotkey>.fromOpaque(refcon).takeUnretainedValue()
 
             if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
-                // Re-enable synchronously on the event-tap thread so the
-                // next Fn event doesn't fall on the floor while we wait
-                // for the main queue.
                 if let tap = me.eventTapUnsafe {
                     CGEvent.tapEnable(tap: tap, enable: true)
                 }
@@ -135,79 +123,66 @@ final class GlobalHotkey: ObservableObject {
         else if !fnNow && fnWas { handleFnReleased() }
     }
 
-    private func captureFrontmostApp() {
+    private func frontmostTargetApp() -> NSRunningApplication? {
         let frontmost = NSWorkspace.shared.frontmostApplication
         let ourBundle = Bundle.main.bundleIdentifier
-        pipeline.targetApp = (frontmost?.bundleIdentifier != ourBundle) ? frontmost : nil
+        return (frontmost?.bundleIdentifier != ourBundle) ? frontmost : nil
     }
 
     private func handleFnPressed() {
-        // Ignore key-repeat events — only act on the first down edge.
         guard fnDownTime == nil else { return }
         fnDownTime = Date()
 
-        switch recordMode {
-        case .toggle:
-            // Already recording — commit immediately on key-down.
+        switch session {
+        case .recording:
             print("[Flowa] Fn press → COMMIT")
-            recordMode = .none
             commitListening()
-
-        case .none:
-            // Not recording — capture frontmost app and start immediately.
-            captureFrontmostApp()
+        case .idle:
             print("[Flowa] Fn press → START recording")
-            recordMode = .toggle
             startListening()
         }
     }
 
     private func handleFnReleased() {
-        // Just clear the down-time so the next press is recognised as a
-        // fresh key-down edge. All logic runs on press, not release.
         fnDownTime = nil
     }
 
     // MARK: - Listening commands
 
     private func startListening() {
-        guard !isListening else { return }
-        // Only show the recording UI (isListening + panel) if audio
-        // actually starts. This prevents the Flow Bar from appearing
-        // for a dictation that will immediately fail (Issue 6).
-        if pipeline.start() {
-            isListening = true
-            panel.show()
-        } else {
-            // Failure: pipeline already set lastErrorMessage.
-            // UI state remains clean; HomeView banner will surface the error
-            // when the main window is visible.
-            recordMode = .none
+        guard session == .idle else { return }
+
+        // Don't capture audio if Whisper isn't ready — user would record
+        // successfully then get silence in Recent. Kick install/repair UI.
+        if !pipeline.transcriber.isReady {
+            print("[Flowa] Fn press ignored — speech model not ready (\(pipeline.transcriber.status))")
+            pipeline.surfaceModelNotReady()
+            NotificationCenter.default.post(name: .flowaShowMainWindow, object: nil)
+            Task { await pipeline.transcriber.loadIfNeeded() }
+            return
         }
+
+        let target = frontmostTargetApp()
+        let micUID = AudioDeviceManager.resolveCaptureUID(Preferences.microphoneUID)
+        if pipeline.start(targetApp: target, microphoneUID: micUID) {
+            session = .recording
+            panel.show()
+        }
+        // On failure pipeline already set lastErrorMessage; stay idle.
     }
 
     func commitListening() {
-        guard isListening else { return }
-        isListening = false
-        recordMode = .none
+        guard session == .recording else { return }
+        session = .idle
         panel.hide()
-        pipeline.commit()   // → transcribe → paste into focused app
+        pipeline.commit(language: Preferences.languageForWhisper)
     }
 
     func cancelListening() {
-        guard isListening else { return }
-        isListening = false
-        recordMode = .none
+        guard session == .recording else { return }
+        session = .idle
         fnDownTime = nil
         panel.hide()
         pipeline.cancel()
-    }
-
-    // MARK: - Permission helper
-
-    func openInputMonitoringSettings() {
-        if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
-            NSWorkspace.shared.open(url)
-        }
     }
 }

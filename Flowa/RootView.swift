@@ -5,22 +5,20 @@
 // permission status + speech-model readiness:
 //
 //   ① OnboardingView — until all three TCC permissions are granted
-//   ② InstallingView — once per machine, while Whisper does its
-//                       one-time CoreML compile (~2 min on Apple
-//                       Silicon). Skipped if the model is already
-//                       compiled from a previous launch.
+//   ② InstallingView — one-time CoreML prepare of the bundled engine
+//                       (~2 min offline), or retry after a load error.
 //   ③ HomeView       — main app. Banners surface any permission
 //                       that gets revoked after install.
 
 import SwiftUI
 
 struct RootView: View {
-    @ObservedObject var hotkey: GlobalHotkey
+    @ObservedObject var pipeline: DictationPipeline
     @ObservedObject var conflict: FnConflictDetector
     @ObservedObject var permissions: PermissionChecker
 
-    @AppStorage("flowa.onboardingComplete") private var onboardingComplete: Bool = false
-    @AppStorage("flowa.firstRunComplete")  private var firstRunComplete:  Bool = false
+    @AppStorage(PrefKey.onboardingComplete) private var onboardingComplete: Bool = false
+    @AppStorage(PrefKey.firstRunComplete)  private var firstRunComplete:  Bool = false
 
     var body: some View {
         Group {
@@ -30,13 +28,14 @@ struct RootView: View {
                 }
                 .transition(.opacity)
             } else if shouldShowInstalling {
-                InstallingView(transcriber: hotkey.pipeline.transcriber) {
+                InstallingView(transcriber: pipeline.transcriber) {
                     firstRunComplete = true
+                    Preferences.markSpeechModelInstalled()
                 }
                 .transition(.opacity)
             } else {
                 HomeView(
-                    hotkey: hotkey,
+                    pipeline: pipeline,
                     conflict: conflict,
                     permissions: permissions
                 )
@@ -46,15 +45,11 @@ struct RootView: View {
         .animation(.easeInOut(duration: 0.2), value: shouldShowOnboarding)
         .animation(.easeInOut(duration: 0.2), value: shouldShowInstalling)
         .onAppear {
-            // Upgrade case: if all permissions already granted on first
-            // render, mark onboarding done so we don't re-prompt.
             if permissions.allGranted { onboardingComplete = true }
-            // And if the model is already loaded (rare — would mean
-            // prewarm raced to completion before this view rendered),
-            // skip the install screen too.
-            if hotkey.pipeline.transcriber.status == .ready {
-                firstRunComplete = true
-            }
+            syncFirstRunWithTranscriber()
+        }
+        .onChange(of: pipeline.transcriber.status) { _, _ in
+            syncFirstRunWithTranscriber()
         }
     }
 
@@ -62,7 +57,18 @@ struct RootView: View {
         !onboardingComplete && !permissions.allGranted
     }
 
+    /// Install / prepare / error — not only the first-ever launch.
     private var shouldShowInstalling: Bool {
-        !firstRunComplete && hotkey.pipeline.transcriber.status != .ready
+        pipeline.transcriber.needsSetup
+    }
+
+    private func syncFirstRunWithTranscriber() {
+        if pipeline.transcriber.isReady {
+            firstRunComplete = true
+            Preferences.markSpeechModelInstalled()
+        } else if case .error = pipeline.transcriber.status {
+            firstRunComplete = false
+            Preferences.markSpeechModelNotInstalled()
+        }
     }
 }

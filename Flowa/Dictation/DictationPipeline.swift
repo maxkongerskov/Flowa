@@ -3,22 +3,18 @@
 //
 // Coordinates the full dictation loop:
 //
-//   GlobalHotkey  →  pipeline.start()  →  AudioCapture starts
-//   GlobalHotkey  →  pipeline.commit() →  AudioCapture stops →
-//                                         WAV file →
-//                                         Transcriber.transcribe →
-//                                         TextInserter.paste
+//   GlobalHotkey  →  pipeline.start(target:, mic:)  →  AudioCapture
+//   GlobalHotkey  →  pipeline.commit(language:)     →  stop → WAV →
+//                                                      Transcriber → paste
 //
-// Also keeps a small ring of recent transcripts for the Home page's
-// "Recent" list, persisted to disk so it survives relaunches.
+// Transcription is single-flight: a new commit waits for / replaces
+// the previous job so rapid fn taps cannot stack Whisper runs.
 
 import Foundation
 import AppKit
-import ApplicationServices
 import Combine
 
-/// One completed dictation. Persisted to disk so the Recent list
-/// survives app relaunches and reboots.
+/// One completed dictation. Persisted so the Recent list survives relaunches.
 struct Dictation: Identifiable, Equatable, Codable {
     let id: UUID
     let text: String
@@ -36,45 +32,67 @@ struct Dictation: Identifiable, Equatable, Codable {
     }
 }
 
+/// Pure recent-list ring helper — unit-tested without AV/AppKit side effects.
+enum RecentRing {
+    static func inserting(_ entry: Dictation, into items: [Dictation], limit: Int) -> [Dictation] {
+        var next = items
+        next.insert(entry, at: 0)
+        if next.count > limit {
+            next = Array(next.prefix(limit))
+        }
+        return next
+    }
+}
+
 @MainActor
 final class DictationPipeline: ObservableObject {
 
     let audio = AudioCapture()
     let transcriber = Transcriber()
 
-    /// The app that was frontmost when dictation started — the paste
-    /// target. Captured by GlobalHotkey on Fn DOWN; re-activated
-    /// before the synthetic Cmd+V so it lands in the right window.
-    ///
-    /// NOTE: This is overwritten on every new start. For in-flight
-    /// transcriptions (runTranscription Task), we snapshot the value
-    /// at commit() time to avoid TOCTOU races (Issue 8).
-    var targetApp: NSRunningApplication?
+    /// Target app captured when the current recording session started.
+    /// Cleared on commit/cancel; not public for external mutation.
+    private var sessionTargetApp: NSRunningApplication?
 
-    /// User-facing message for the most recent failure (audio start,
-    /// model load, or transcription). nil when there's nothing to show.
-    /// Surfaced as a dismissible banner on Home; cleared on the next
-    /// dictation or when the user dismisses it.
     @Published private(set) var lastErrorMessage: String?
-
-    /// Ring of recent dictations, newest first. Capped at `recentLimit`.
-    /// Loaded from disk on init and resaved on every change.
     @Published private(set) var recent: [Dictation] = []
+    /// True while a Whisper job is running (for menu bar / UI).
+    @Published private(set) var isTranscribing: Bool = false
+
     private let recentLimit = 100
+    /// Serialises transcription work so commits never pile up.
+    private var transcriptionTask: Task<Void, Never>?
 
     init() {
         self.recent = Self.loadFromDisk()
     }
 
-    /// Wipe the recent list — used by the Clear button on Home.
     func clearRecent() {
         recent.removeAll()
         Self.saveToDisk(recent)
     }
 
-    /// Dismiss the current error banner.
     func dismissError() {
         lastErrorMessage = nil
+    }
+
+    /// Called when the user hits Fn but Whisper is not ready yet.
+    func surfaceModelNotReady() {
+        if case .error(let message) = transcriber.status {
+            lastErrorMessage = message
+        } else if case .preparing = transcriber.status {
+            lastErrorMessage = "Still installing Flowa on this Mac. Try again in a moment."
+        } else {
+            lastErrorMessage = "Flowa isn't finished installing yet. Check the main window."
+        }
+    }
+
+    /// In-app reinstall of the speech model without a full permissions reset.
+    func reinstallSpeechModel() {
+        lastErrorMessage = nil
+        transcriber.resetForReinstall(clearCache: true)
+        NotificationCenter.default.post(name: .flowaShowMainWindow, object: nil)
+        Task { await transcriber.loadIfNeeded() }
     }
 
     // MARK: - Persistence
@@ -104,55 +122,121 @@ final class DictationPipeline: ObservableObject {
         try? data.write(to: storageURL, options: .atomic)
     }
 
-    /// Kick off model loading early so the first dictation isn't slow.
-    /// Called by FlowaApp.onAppear.
     func prewarm() {
         Task { await transcriber.loadIfNeeded() }
     }
 
     // MARK: - Lifecycle
 
-    /// Returns true if audio capture started successfully.
-    /// On failure, sets lastErrorMessage (caller may choose not to show
-    /// recording UI).
+    /// Start recording for `targetApp` using the given microphone UID
+    /// (`"default"` / empty = system default). Binds the paste target
+    /// to this session.
     @discardableResult
-    func start() -> Bool {
+    func start(targetApp: NSRunningApplication?, microphoneUID: String) -> Bool {
         lastErrorMessage = nil
+        sessionTargetApp = targetApp
         do {
-            try audio.start()
+            try audio.start(
+                deviceUID: microphoneUID,
+                maxDuration: Preferences.maxDurationSeconds
+            )
             return true
         } catch {
+            sessionTargetApp = nil
             let details = String(describing: error)
-            lastErrorMessage = "Couldn't start recording. Check your microphone and try again."
+            // Prefer localized description when we threw a user-facing NSError.
+            let ns = error as NSError
+            if ns.domain == "AudioCapture", let msg = ns.userInfo[NSLocalizedDescriptionKey] as? String {
+                lastErrorMessage = msg
+            } else {
+                lastErrorMessage = "Couldn't start recording. Check your microphone and try again."
+            }
             print("[Flowa] pipeline.start FAILED: \(error) — full: \(details)")
             return false
         }
     }
 
-    func commit() {
-        guard let wavURL = audio.stop() else { return }
-        // Snapshot the target at commit time. This prevents an in-flight
-        // transcription Task from observing a later targetApp overwrite
-        // when the user quickly starts a new dictation (Issue 8).
-        let capturedTarget = targetApp
-        Task { await runTranscription(wavURL: wavURL, targetApp: capturedTarget) }
+    /// Stop audio, snapshot the session target, and transcribe with the
+    /// given Whisper language (nil = auto-detect).
+    func commit(language: String?) {
+        let wasSilent = audio.appearsSilent
+        let deviceKind = audio.sessionDeviceKind
+        let peak = audio.sessionPeakLevel
+        let hitMax = audio.stoppedForMaxDuration
+        let maxMinutes = Preferences.maxDurationMinutes
+
+        guard let wavURL = audio.stop() else {
+            sessionTargetApp = nil
+            if wasSilent {
+                lastErrorMessage = Self.silenceMessage(kind: deviceKind)
+            }
+            return
+        }
+
+        // Near-silent take: skip Whisper and surface a clear tip.
+        if wasSilent {
+            print("[Flowa] commit skipped — silent take peak=\(peak) kind=\(deviceKind)")
+            try? FileManager.default.removeItem(at: wavURL)
+            sessionTargetApp = nil
+            lastErrorMessage = Self.silenceMessage(kind: deviceKind)
+            return
+        }
+
+        let capturedTarget = sessionTargetApp
+        sessionTargetApp = nil
+
+        // Single-flight: queue so only one runTranscription runs at a time.
+        let previous = transcriptionTask
+        transcriptionTask = Task { @MainActor in
+            _ = await previous?.value
+            await self.runTranscription(
+                wavURL: wavURL,
+                targetApp: capturedTarget,
+                language: language,
+                hitMaxDuration: hitMax,
+                maxMinutes: maxMinutes
+            )
+        }
+    }
+
+    private static func silenceMessage(kind: MicDeviceKind) -> String {
+        switch kind {
+        case .continuity:
+            return "No speech heard from the iPhone mic. Hold the phone near your mouth and try again — Continuity picks up the phone, not the Mac."
+        case .standard:
+            return "No speech heard. Check the selected microphone and try again."
+        }
     }
 
     func cancel() {
         audio.cancel()
+        sessionTargetApp = nil
     }
 
     // MARK: - Transcription + paste
 
-    private func runTranscription(wavURL: URL, targetApp: NSRunningApplication?) async {
+    private func runTranscription(wavURL: URL,
+                                  targetApp: NSRunningApplication?,
+                                  language: String?,
+                                  hitMaxDuration: Bool,
+                                  maxMinutes: Int) async {
+        isTranscribing = true
+        defer { isTranscribing = false }
+
         await transcriber.loadIfNeeded()
 
         let started = Date()
-        guard let text = await transcriber.transcribe(wavFile: wavURL) else {
-            // Distinguish a real failure (model/transcription error) from
-            // simply-empty audio (user pressed fn but said nothing).
-            if case .error(let message) = transcriber.status {
+        guard let text = await transcriber.transcribe(wavFile: wavURL, language: language) else {
+            if let decode = transcriber.lastDecodeErrorMessage {
+                lastErrorMessage = decode
+            } else if case .error(let message) = transcriber.status {
                 lastErrorMessage = message
+            } else {
+                lastErrorMessage = "Couldn't understand that audio. Try speaking more clearly or check the microphone."
+            }
+            // If the model itself failed, open the install/repair UI.
+            if transcriber.needsSetup {
+                NotificationCenter.default.post(name: .flowaShowMainWindow, object: nil)
             }
             print("[Flowa] transcription produced no text")
             try? FileManager.default.removeItem(at: wavURL)
@@ -160,41 +244,47 @@ final class DictationPipeline: ObservableObject {
         }
         let elapsed = String(format: "%.2f", Date().timeIntervalSince(started))
 
-        _ = TextInserter.paste(text, targetApp: targetApp)
+        let outcome = TextInserter.paste(text, targetApp: targetApp)
+        switch outcome {
+        case .accessibilityMissing:
+            // Soft tip — text is on the clipboard.
+            if lastErrorMessage == nil {
+                lastErrorMessage = "Transcript is on the clipboard (Accessibility is off for auto-paste)."
+            }
+        case .failed:
+            lastErrorMessage = "Couldn't copy the transcript to the clipboard."
+        case .clipboardOnly, .pasted:
+            break
+        }
 
-        // Never log transcript content or the target app in release builds —
-        // the unified log is captured by Console / sysdiagnose.
         #if DEBUG
         let preview = text.count > 60 ? String(text.prefix(60)) + "…" : text
         let target = targetApp?.localizedName ?? "<clipboard only>"
-        print("[Flowa] ✓ \(elapsed)s · \"\(preview)\" → \(target)")
+        print("[Flowa] ✓ \(elapsed)s · \"\(preview)\" → \(target) outcome=\(outcome)")
         #else
         print("[Flowa] ✓ transcribed in \(elapsed)s")
         #endif
 
-        // Record this dictation so the Home page can list it, and
-        // persist immediately so a crash / quit can't lose it.
         let entry = Dictation(
             text: text,
             targetAppName: targetApp?.localizedName,
             date: Date()
         )
-        recent.insert(entry, at: 0)
-        if recent.count > recentLimit {
-            recent = Array(recent.prefix(recentLimit))
-        }
+        recent = RecentRing.inserting(entry, into: recent, limit: recentLimit)
         Self.saveToDisk(recent)
 
-        // Best-effort temp file cleanup.
+        if hitMaxDuration {
+            let label = maxMinutes >= 60 && maxMinutes % 60 == 0
+                ? "\(maxMinutes / 60) hour\(maxMinutes == 60 ? "" : "s")"
+                : "\(maxMinutes) minute\(maxMinutes == 1 ? "" : "s")"
+            lastErrorMessage = "Recording stopped at your \(label) limit. Transcript was still saved."
+        }
+
         try? FileManager.default.removeItem(at: wavURL)
     }
 }
 
 // MARK: - JSON config
-//
-// One ISO-8601 encoder/decoder pair used by the persistence layer so
-// dates round-trip cleanly across app versions and (eventually) for
-// hand-inspection of the file.
 
 private extension JSONEncoder {
     static let flowa: JSONEncoder = {

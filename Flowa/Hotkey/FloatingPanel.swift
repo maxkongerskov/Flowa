@@ -12,6 +12,10 @@ import SwiftUI
 
 final class FlowaFloatingPanel: NSPanel {
 
+    /// Bumps on every show/hide so a stale hide animation cannot orderOut
+    /// a panel that has already been shown again (rapid fn start/stop/start).
+    private var presentationGeneration: UInt64 = 0
+
     init<Content: View>(@ViewBuilder content: () -> Content) {
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 220, height: 44),
@@ -47,20 +51,26 @@ final class FlowaFloatingPanel: NSPanel {
     override var canBecomeMain: Bool { false }
 
     func show() {
+        presentationGeneration &+= 1
+        // Bumping generation invalidates any in-flight hide completion (orderOut).
+        // Snap alpha immediately so a half-finished hide cannot leave us invisible.
         positionAtBottomCentre()
-        // Force-set alpha to 1 immediately as a safety net so the panel
-        // is visible even if the animation context misfires.
         self.alphaValue = 1.0
         orderFrontRegardless()
     }
 
     func hide() {
+        presentationGeneration &+= 1
+        let generation = presentationGeneration
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = 0.14
             ctx.timingFunction = CAMediaTimingFunction(name: .easeIn)
             self.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
-            self?.orderOut(nil)
+            guard let self else { return }
+            // Only orderOut if no newer show/hide superseded this hide.
+            guard self.presentationGeneration == generation else { return }
+            self.orderOut(nil)
         })
     }
 

@@ -3,7 +3,7 @@
 //
 // Centralised colour and type tokens. Every colour is *dynamic* —
 // it resolves to a different value depending on whether the system
-// (or our @AppStorage("flowa.colorScheme") preference) is currently
+// (or our PrefKey.colorSchemeDark / preferredColorScheme) is currently
 // light or dark. SwiftUI views that read these tokens auto-update
 // when the user flips the sun/moon toggle on the Home page.
 

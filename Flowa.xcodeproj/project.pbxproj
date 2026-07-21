@@ -11,6 +11,18 @@
 		FB0000000000000000000002 /* Theme.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000002 /* Theme.swift */; };
 		FB0000000000000000000003 /* RootView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000003 /* RootView.swift */; };
 		FB0000000000000000000008 /* HomeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000008 /* HomeView.swift */; };
+		FB0000000000000000000009 /* Banners.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000009 /* Banners.swift */; };
+		FB000000000000000000000A /* AcknowledgementsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000000000000000000000A /* AcknowledgementsView.swift */; };
+		FB0000000000000000000015 /* HomeChrome.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000015 /* HomeChrome.swift */; };
+		FB000000000000000000000B /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000000000000000000000B /* OnboardingView.swift */; };
+		FB000000000000000000000C /* InstallingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000000000000000000000C /* InstallingView.swift */; };
+		FB000000000000000000000D /* Preferences.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000000000000000000000D /* Preferences.swift */; };
+		FB0000000000000000000017 /* SpeechModelStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000017 /* SpeechModelStore.swift */; };
+		FB000000000000000000000E /* SystemSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000000000000000000000E /* SystemSettings.swift */; };
+		FB0000000000000000000012 /* LanguageOption.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000012 /* LanguageOption.swift */; };
+		FB0000000000000000000016 /* MicDeviceKind.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000016 /* MicDeviceKind.swift */; };
+		FB0000000000000000000013 /* PermissionChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000013 /* PermissionChecker.swift */; };
+		FB0000000000000000000014 /* Repair.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000014 /* Repair.swift */; };
 		FB000000000000000000000F /* GlobalHotkey.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF000000000000000000000F /* GlobalHotkey.swift */; };
 		FB0000000000000000000010 /* FnConflictDetector.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000010 /* FnConflictDetector.swift */; };
 		FB0000000000000000000011 /* FloatingPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000011 /* FloatingPanel.swift */; };
@@ -21,13 +33,45 @@
 		FB0000000000000000000030 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = FF0000000000000000000302 /* WhisperKit */; };
 		FB0000000000000000000040 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000040 /* Assets.xcassets */; };
 		FB0000000000000000000041 /* Models in Resources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000041 /* Models */; };
+		FB0000000000000000000050 /* PreferencesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000050 /* PreferencesTests.swift */; };
+		FB0000000000000000000051 /* LanguageOptionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000051 /* LanguageOptionTests.swift */; };
+		FB0000000000000000000052 /* RecentRingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000052 /* RecentRingTests.swift */; };
+		FB0000000000000000000053 /* RepairTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000053 /* RepairTests.swift */; };
+		FB0000000000000000000059 /* SpeechModelStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000059 /* SpeechModelStoreTests.swift */; };
+		FB0000000000000000000054 /* SmokeIntegrationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000054 /* SmokeIntegrationTests.swift */; };
+		FB0000000000000000000055 /* ConfidenceE2ETests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000055 /* ConfidenceE2ETests.swift */; };
+		FB0000000000000000000056 /* IPhoneMicLiveTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000056 /* IPhoneMicLiveTests.swift */; };
+		FB0000000000000000000057 /* MicDeviceKindTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000057 /* MicDeviceKindTests.swift */; };
+		FB0000000000000000000058 /* ShipGateTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FF0000000000000000000058 /* ShipGateTests.swift */; };
 /* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		FF0000000000000000000060 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = FF0000000000000000000113 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = FF00000000000000000000F1;
+			remoteInfo = Flowa;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
 		FF0000000000000000000001 /* FlowaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FlowaApp.swift; sourceTree = "<group>"; };
 		FF0000000000000000000002 /* Theme.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Theme.swift; sourceTree = "<group>"; };
 		FF0000000000000000000003 /* RootView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RootView.swift; sourceTree = "<group>"; };
 		FF0000000000000000000008 /* HomeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeView.swift; sourceTree = "<group>"; };
+		FF0000000000000000000009 /* Banners.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Banners.swift; sourceTree = "<group>"; };
+		FF000000000000000000000A /* AcknowledgementsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AcknowledgementsView.swift; sourceTree = "<group>"; };
+		FF0000000000000000000015 /* HomeChrome.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HomeChrome.swift; sourceTree = "<group>"; };
+		FF000000000000000000000B /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
+		FF000000000000000000000C /* InstallingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = InstallingView.swift; sourceTree = "<group>"; };
+		FF000000000000000000000D /* Preferences.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Preferences.swift; sourceTree = "<group>"; };
+		FF0000000000000000000017 /* SpeechModelStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechModelStore.swift; sourceTree = "<group>"; };
+		FF000000000000000000000E /* SystemSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SystemSettings.swift; sourceTree = "<group>"; };
+		FF0000000000000000000012 /* LanguageOption.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageOption.swift; sourceTree = "<group>"; };
+		FF0000000000000000000016 /* MicDeviceKind.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicDeviceKind.swift; sourceTree = "<group>"; };
+		FF0000000000000000000013 /* PermissionChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PermissionChecker.swift; sourceTree = "<group>"; };
+		FF0000000000000000000014 /* Repair.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Repair.swift; sourceTree = "<group>"; };
 		FF000000000000000000000F /* GlobalHotkey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalHotkey.swift; sourceTree = "<group>"; };
 		FF0000000000000000000010 /* FnConflictDetector.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FnConflictDetector.swift; sourceTree = "<group>"; };
 		FF0000000000000000000011 /* FloatingPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FloatingPanel.swift; sourceTree = "<group>"; };
@@ -38,6 +82,17 @@
 		FF0000000000000000000040 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		FF0000000000000000000041 /* Models */ = {isa = PBXFileReference; lastKnownFileType = folder; path = Models; sourceTree = "<group>"; };
 		FF00000000000000000000C1 /* Flowa.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Flowa.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		FF00000000000000000000C2 /* FlowaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = FlowaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		FF0000000000000000000050 /* PreferencesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PreferencesTests.swift; sourceTree = "<group>"; };
+		FF0000000000000000000051 /* LanguageOptionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LanguageOptionTests.swift; sourceTree = "<group>"; };
+		FF0000000000000000000052 /* RecentRingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RecentRingTests.swift; sourceTree = "<group>"; };
+		FF0000000000000000000053 /* RepairTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RepairTests.swift; sourceTree = "<group>"; };
+		FF0000000000000000000059 /* SpeechModelStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SpeechModelStoreTests.swift; sourceTree = "<group>"; };
+		FF0000000000000000000054 /* SmokeIntegrationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SmokeIntegrationTests.swift; sourceTree = "<group>"; };
+		FF0000000000000000000055 /* ConfidenceE2ETests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfidenceE2ETests.swift; sourceTree = "<group>"; };
+		FF0000000000000000000056 /* IPhoneMicLiveTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IPhoneMicLiveTests.swift; sourceTree = "<group>"; };
+		FF0000000000000000000057 /* MicDeviceKindTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MicDeviceKindTests.swift; sourceTree = "<group>"; };
+		FF0000000000000000000058 /* ShipGateTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ShipGateTests.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -49,6 +104,13 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FF00000000000000000000D2 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -56,6 +118,7 @@
 			isa = PBXGroup;
 			children = (
 				FF00000000000000000000E1 /* Flowa */,
+				FF00000000000000000000E7 /* FlowaTests */,
 				FF00000000000000000000E2 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -69,6 +132,9 @@
 				FF0000000000000000000040 /* Assets.xcassets */,
 				FF0000000000000000000041 /* Models */,
 				FF00000000000000000000E4 /* Sections */,
+				FF00000000000000000000E8 /* Onboarding */,
+				FF00000000000000000000E9 /* Support */,
+				FF00000000000000000000EA /* Permissions */,
 				FF00000000000000000000E5 /* Hotkey */,
 				FF00000000000000000000E6 /* Dictation */,
 			);
@@ -79,6 +145,7 @@
 			isa = PBXGroup;
 			children = (
 				FF00000000000000000000C1 /* Flowa.app */,
+				FF00000000000000000000C2 /* FlowaTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -87,6 +154,9 @@
 			isa = PBXGroup;
 			children = (
 				FF0000000000000000000008 /* HomeView.swift */,
+				FF0000000000000000000015 /* HomeChrome.swift */,
+				FF0000000000000000000009 /* Banners.swift */,
+				FF000000000000000000000A /* AcknowledgementsView.swift */,
 			);
 			path = Sections;
 			sourceTree = "<group>";
@@ -112,6 +182,53 @@
 			path = Dictation;
 			sourceTree = "<group>";
 		};
+		FF00000000000000000000E7 /* FlowaTests */ = {
+			isa = PBXGroup;
+			children = (
+				FF0000000000000000000050 /* PreferencesTests.swift */,
+				FF0000000000000000000051 /* LanguageOptionTests.swift */,
+				FF0000000000000000000052 /* RecentRingTests.swift */,
+				FF0000000000000000000053 /* RepairTests.swift */,
+				FF0000000000000000000059 /* SpeechModelStoreTests.swift */,
+				FF0000000000000000000054 /* SmokeIntegrationTests.swift */,
+				FF0000000000000000000055 /* ConfidenceE2ETests.swift */,
+				FF0000000000000000000056 /* IPhoneMicLiveTests.swift */,
+				FF0000000000000000000057 /* MicDeviceKindTests.swift */,
+				FF0000000000000000000058 /* ShipGateTests.swift */,
+			);
+			path = FlowaTests;
+			sourceTree = "<group>";
+		};
+		FF00000000000000000000E8 /* Onboarding */ = {
+			isa = PBXGroup;
+			children = (
+				FF000000000000000000000B /* OnboardingView.swift */,
+				FF000000000000000000000C /* InstallingView.swift */,
+			);
+			path = Onboarding;
+			sourceTree = "<group>";
+		};
+		FF00000000000000000000E9 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				FF000000000000000000000D /* Preferences.swift */,
+				FF0000000000000000000017 /* SpeechModelStore.swift */,
+				FF000000000000000000000E /* SystemSettings.swift */,
+				FF0000000000000000000012 /* LanguageOption.swift */,
+				FF0000000000000000000016 /* MicDeviceKind.swift */,
+			);
+			path = Support;
+			sourceTree = "<group>";
+		};
+		FF00000000000000000000EA /* Permissions */ = {
+			isa = PBXGroup;
+			children = (
+				FF0000000000000000000013 /* PermissionChecker.swift */,
+				FF0000000000000000000014 /* Repair.swift */,
+			);
+			path = Permissions;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -135,6 +252,23 @@
 			productReference = FF00000000000000000000C1 /* Flowa.app */;
 			productType = "com.apple.product-type.application";
 		};
+		FF00000000000000000000F2 /* FlowaTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = FF0000000000000000000115 /* Build configuration list for PBXNativeTarget "FlowaTests" */;
+			buildPhases = (
+				FF0000000000000000000116 /* Sources */,
+				FF00000000000000000000D2 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FF0000000000000000000061 /* PBXTargetDependency */,
+			);
+			name = FlowaTests;
+			productName = FlowaTests;
+			productReference = FF00000000000000000000C2 /* FlowaTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -147,6 +281,10 @@
 				TargetAttributes = {
 					FF00000000000000000000F1 = {
 						CreatedOnToolsVersion = 15.0;
+					};
+					FF00000000000000000000F2 = {
+						CreatedOnToolsVersion = 15.0;
+						TestTargetID = FF00000000000000000000F1;
 					};
 				};
 			};
@@ -167,6 +305,7 @@
 			projectRoot = "";
 			targets = (
 				FF00000000000000000000F1 /* Flowa */,
+				FF00000000000000000000F2 /* FlowaTests */,
 			);
 		};
 /* End PBXProject section */
@@ -192,6 +331,18 @@
 				FB0000000000000000000002 /* Theme.swift in Sources */,
 				FB0000000000000000000003 /* RootView.swift in Sources */,
 				FB0000000000000000000008 /* HomeView.swift in Sources */,
+				FB0000000000000000000015 /* HomeChrome.swift in Sources */,
+				FB0000000000000000000009 /* Banners.swift in Sources */,
+				FB000000000000000000000A /* AcknowledgementsView.swift in Sources */,
+				FB000000000000000000000B /* OnboardingView.swift in Sources */,
+				FB000000000000000000000C /* InstallingView.swift in Sources */,
+				FB000000000000000000000D /* Preferences.swift in Sources */,
+				FB0000000000000000000017 /* SpeechModelStore.swift in Sources */,
+				FB000000000000000000000E /* SystemSettings.swift in Sources */,
+				FB0000000000000000000012 /* LanguageOption.swift in Sources */,
+				FB0000000000000000000016 /* MicDeviceKind.swift in Sources */,
+				FB0000000000000000000013 /* PermissionChecker.swift in Sources */,
+				FB0000000000000000000014 /* Repair.swift in Sources */,
 				FB000000000000000000000F /* GlobalHotkey.swift in Sources */,
 				FB0000000000000000000010 /* FnConflictDetector.swift in Sources */,
 				FB0000000000000000000011 /* FloatingPanel.swift in Sources */,
@@ -202,7 +353,32 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		FF0000000000000000000116 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				FB0000000000000000000050 /* PreferencesTests.swift in Sources */,
+				FB0000000000000000000051 /* LanguageOptionTests.swift in Sources */,
+				FB0000000000000000000052 /* RecentRingTests.swift in Sources */,
+				FB0000000000000000000053 /* RepairTests.swift in Sources */,
+				FB0000000000000000000059 /* SpeechModelStoreTests.swift in Sources */,
+				FB0000000000000000000054 /* SmokeIntegrationTests.swift in Sources */,
+				FB0000000000000000000055 /* ConfidenceE2ETests.swift in Sources */,
+				FB0000000000000000000056 /* IPhoneMicLiveTests.swift in Sources */,
+				FB0000000000000000000057 /* MicDeviceKindTests.swift in Sources */,
+				FB0000000000000000000058 /* ShipGateTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FF0000000000000000000061 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = FF00000000000000000000F1 /* Flowa */;
+			targetProxy = FF0000000000000000000060 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		FF0000000000000000000201 /* Debug */ = {
@@ -318,7 +494,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = 6LZ2DS9JPD;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -331,7 +507,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.5;
+				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.maxkongerskov.Flowa;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -347,7 +523,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 7;
+				CURRENT_PROJECT_VERSION = 8;
 				DEVELOPMENT_TEAM = 6LZ2DS9JPD;
 				ENABLE_HARDENED_RUNTIME = YES;
 				ENABLE_PREVIEWS = YES;
@@ -360,11 +536,47 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.3.5;
+				MARKETING_VERSION = 1.0.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.maxkongerskov.Flowa;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		FF0000000000000000000205 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6LZ2DS9JPD;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maxkongerskov.FlowaTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Flowa.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Flowa";
+			};
+			name = Debug;
+		};
+		FF0000000000000000000206 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 6LZ2DS9JPD;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.maxkongerskov.FlowaTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Flowa.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Flowa";
 			};
 			name = Release;
 		};
@@ -385,6 +597,15 @@
 			buildConfigurations = (
 				FF0000000000000000000201 /* Debug */,
 				FF0000000000000000000202 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		FF0000000000000000000115 /* Build configuration list for PBXNativeTarget "FlowaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				FF0000000000000000000205 /* Debug */,
+				FF0000000000000000000206 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

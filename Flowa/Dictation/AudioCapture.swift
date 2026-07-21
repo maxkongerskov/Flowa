@@ -29,13 +29,30 @@ struct AudioInputDevice: Identifiable, Hashable {
     let id: AudioDeviceID
     let uid: String
     let name: String
+    let modelUID: String
+    let transport: UInt32
+
+    var kind: MicDeviceKind {
+        MicDeviceKind.classify(name: name, modelUID: modelUID, transport: transport, uid: uid)
+    }
+
+    var isContinuity: Bool { kind == .continuity }
+
+    /// Label for the Home microphone menu.
+    var displayName: String {
+        MicDeviceKind.displayName(name: name, kind: kind)
+    }
 }
 
 enum AudioDeviceManager {
 
-    /// Returns every audio device that exposes at least one input
-    /// stream, in the order Core Audio gives them. The default system
-    /// input is included; pick it by name if you want a "default" pin.
+    /// Inputs suitable for the picker: real devices, Continuity included.
+    /// Ephemeral system aggregates are omitted (UID changes across boots).
+    static func listInputsForPicker() -> [AudioInputDevice] {
+        listInputs().filter { !MicDeviceKind.isEphemeralAggregateUID($0.uid) }
+    }
+
+    /// Returns every audio device that exposes at least one input stream.
     static func listInputs() -> [AudioInputDevice] {
         var addr = AudioObjectPropertyAddress(
             mSelector: kAudioHardwarePropertyDevices,
@@ -53,16 +70,30 @@ enum AudioDeviceManager {
         var devices: [AudioInputDevice] = []
         for id in ids {
             if hasInputStream(id), let uid = deviceUID(id) {
-                devices.append(AudioInputDevice(id: id, uid: uid, name: deviceName(id)))
+                devices.append(AudioInputDevice(
+                    id: id,
+                    uid: uid,
+                    name: deviceName(id),
+                    modelUID: deviceModelUID(id) ?? "",
+                    transport: transportType(id)
+                ))
             }
         }
         return devices
     }
 
-    /// Resolve a persisted UID back to a live AudioDeviceID. nil if the
-    /// device has been unplugged since the user selected it.
+    /// Resolve a persisted UID back to a live device. nil if unplugged.
     static func find(uid: String) -> AudioInputDevice? {
         listInputs().first { $0.uid == uid }
+    }
+
+    /// Map a stored preference to a live capture UID.
+    /// Falls back to `"default"` when the device is missing or ephemeral.
+    static func resolveCaptureUID(_ preferred: String) -> String {
+        if Preferences.isSystemDefaultMicrophone(preferred) { return "default" }
+        if MicDeviceKind.isEphemeralAggregateUID(preferred) { return "default" }
+        if find(uid: preferred) != nil { return preferred }
+        return "default"
     }
 
     // MARK: - Per-device property reads
@@ -86,10 +117,25 @@ enum AudioDeviceManager {
         return copyCFString(id, selector: kAudioObjectPropertyName) ?? "Device \(id)"
     }
 
-    /// Read a CFString property via Core Audio safely. We pass an
-    /// `Unmanaged<CFString>?` (a pointer-sized value) instead of a
-    /// `CFString` variable — `&cfString` is incorrect because CFString
-    /// holds an object reference, and the compiler now warns about it.
+    private static func deviceModelUID(_ id: AudioDeviceID) -> String? {
+        return copyCFString(id, selector: kAudioDevicePropertyModelUID)
+    }
+
+    private static func transportType(_ id: AudioDeviceID) -> UInt32 {
+        var addr = AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyTransportType,
+            mScope: kAudioObjectPropertyScopeGlobal,
+            mElement: kAudioObjectPropertyElementMain
+        )
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else {
+            return 0
+        }
+        return value
+    }
+
+    /// Read a CFString property via Core Audio safely.
     private static func copyCFString(_ id: AudioDeviceID, selector: AudioObjectPropertySelector) -> String? {
         var addr = AudioObjectPropertyAddress(
             mSelector: selector,
@@ -113,6 +159,17 @@ final class AudioCapture: ObservableObject {
     @Published private(set) var isRecording: Bool = false
     @Published private(set) var lastError: String?
 
+    /// Peak RMS-derived level (0...1 scale used for the waveform) for
+    /// the current / last session — used to detect near-silent captures
+    /// (e.g. Continuity mic while speaking at the Mac, not the phone).
+    private(set) var sessionPeakLevel: Float = 0
+
+    /// Kind of the device used for the last started session (for error copy).
+    private(set) var sessionDeviceKind: MicDeviceKind = .standard
+
+    /// True when capture hit the user-configured hard max duration this session.
+    private(set) var stoppedForMaxDuration: Bool = false
+
     // var (not let) so we can replace it with a fresh instance each
     // recording session. macOS 26 has stricter AVFAudio tap-state
     // tracking — even after removeTap+stop, the old engine's internal
@@ -122,6 +179,17 @@ final class AudioCapture: ObservableObject {
     private var engine = AVAudioEngine()
     private var collected: [Float] = []
     private let targetSampleRate: Double = 16_000
+
+    /// Monotonic session id so late MainActor hops from a previous
+    /// recording cannot append into the next session's buffer.
+    private var captureGeneration: UInt64 = 0
+    private var activeGeneration: UInt64 = 0
+    private var maxDurationTimer: Timer?
+
+    /// Below this peak, commit treats the take as "no speech heard".
+    /// Calibrated against live Continuity speech (peaks ~0.05–0.13).
+    static let silencePeakThreshold: Float = 0.008
+
     // Debug counters — used only under DEBUG to observe tap path health.
     // Not read in release builds.
     #if DEBUG
@@ -136,43 +204,65 @@ final class AudioCapture: ObservableObject {
 
     // MARK: - Public lifecycle
 
-    func start() throws {
-        guard !isRecording else { return }
+    /// Start capture. `deviceUID` is a Core Audio UID, or `"default"` /
+    /// empty for the system input. `maxDuration` is an optional hard stop
+    /// (user setting; `nil` = no limit). Callers supply prefs; this type
+    /// does not read UserDefaults itself.
+    func start(deviceUID: String = "default", maxDuration: TimeInterval? = nil) throws {
+        guard !isRecording else {
+            throw NSError(domain: "AudioCapture", code: 5,
+                          userInfo: [NSLocalizedDescriptionKey: "Already recording"])
+        }
         collected.removeAll(keepingCapacity: true)
+        sessionPeakLevel = 0
+        sessionDeviceKind = .standard
+        stoppedForMaxDuration = false
+        captureGeneration &+= 1
+        activeGeneration = captureGeneration
+        let generation = activeGeneration
         #if DEBUG
         tapCallbackCount = 0
         processBufferNilCount = 0
         #endif
         lastError = nil
+        maxDurationTimer?.invalidate()
+        maxDurationTimer = nil
 
-        // Replace the engine with a fresh instance every session.
-        // This is the definitive fix for the "nullptr == Tap()" NSException
-        // that occurs on the second+ recording session on macOS 26.
-        // removeTap alone is not sufficient — AVFAudio's internal tap state
-        // persists on the old engine object even after stop()+removeTap().
-        // A new AVAudioEngine is cheap to allocate and guaranteed clean.
+        // Fresh engine each session — macOS 26 can keep stale tap state
+        // on a reused AVAudioEngine after stop()+removeTap().
         engine = AVAudioEngine()
 
         let input = engine.inputNode
+        let resolvedUID = AudioDeviceManager.resolveCaptureUID(deviceUID)
 
-        // Apply the user's preferred input device if they picked a
-        // specific one in the UI. "default" / unset → leave the engine
-        // routed to the system default mic.
-        let preferred = UserDefaults.standard.string(forKey: "flowa.microphone") ?? "default"
-        if preferred != "default", let device = AudioDeviceManager.find(uid: preferred) {
-            var deviceID = device.id
-            if let au = input.audioUnit {
-                let err = AudioUnitSetProperty(
-                    au,
-                    kAudioOutputUnitProperty_CurrentDevice,
-                    kAudioUnitScope_Global,
-                    0,
-                    &deviceID,
-                    UInt32(MemoryLayout<AudioDeviceID>.size)
+        if !Preferences.isSystemDefaultMicrophone(resolvedUID),
+           let device = AudioDeviceManager.find(uid: resolvedUID) {
+            sessionDeviceKind = device.kind
+            guard let au = input.audioUnit else {
+                throw NSError(
+                    domain: "AudioCapture",
+                    code: 6,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Couldn't access the audio unit for \(device.displayName). Pick another microphone or System default."]
                 )
-                if err != noErr {
-                    print("[Flowa][audio] could not switch input to \(device.name): err=\(err) — falling back to system default")
-                }
+            }
+            var deviceID = device.id
+            let err = AudioUnitSetProperty(
+                au,
+                kAudioOutputUnitProperty_CurrentDevice,
+                kAudioUnitScope_Global,
+                0,
+                &deviceID,
+                UInt32(MemoryLayout<AudioDeviceID>.size)
+            )
+            if err != noErr {
+                print("[Flowa][audio] could not switch input to \(device.name): err=\(err)")
+                throw NSError(
+                    domain: "AudioCapture",
+                    code: 4,
+                    userInfo: [NSLocalizedDescriptionKey:
+                        "Couldn't switch to \(device.displayName). Pick another microphone or System default."]
+                )
             }
         }
 
@@ -207,13 +297,8 @@ final class AudioCapture: ObservableObject {
         // tap is installed, so this is always safe. Skipping this causes an
         // unrecoverable NSException crash on the second recording session
         // on macOS 26 (even on happy paths after the first session).
-        // See the reverted fix in commit 6c96979 and AVFAudio internals.
         input.removeTap(onBus: 0)
         input.installTap(onBus: 0, bufferSize: 1024, format: nativeFormat) { [weak self] buf, _ in
-            // Do the heavy lifting on the audio thread, then hop to
-            // main with only Sendable primitives — Float array + level.
-            // Avoids capturing the non-Sendable AVAudioPCMBuffer in
-            // the Task and silences Swift 6 concurrency warnings.
             guard let self else { return }
             #if DEBUG
             self.tapCallbackCount += 1
@@ -225,31 +310,59 @@ final class AudioCapture: ObservableObject {
                 return
             }
             Task { @MainActor [weak self] in
-                self?.append(samples: samples, level: level)
+                self?.append(samples: samples, level: level, generation: generation)
             }
         }
 
         engine.prepare()
         try engine.start()
         isRecording = true
+
+        // Optional hard limit from user settings (default/recommended: 1 hour).
+        if let maxDuration, maxDuration > 0 {
+            maxDurationTimer = Timer.scheduledTimer(withTimeInterval: maxDuration, repeats: false) { [weak self] _ in
+                Task { @MainActor in
+                    self?.forceStopForMaxDuration()
+                }
+            }
+        }
     }
 
     func stop() -> URL? {
         guard isRecording else { return nil }
-        engine.inputNode.removeTap(onBus: 0)
-        engine.stop()
-        isRecording = false
-        level = 0
+        endCaptureHardware()
+        // Invalidate generation so any still-queued MainActor appends are dropped.
+        activeGeneration = 0
         return writeWAV()
     }
 
     func cancel() {
         guard isRecording else { return }
+        endCaptureHardware()
+        activeGeneration = 0
+        collected.removeAll(keepingCapacity: false)
+    }
+
+    private func endCaptureHardware() {
+        maxDurationTimer?.invalidate()
+        maxDurationTimer = nil
         engine.inputNode.removeTap(onBus: 0)
         engine.stop()
         isRecording = false
         level = 0
-        collected.removeAll(keepingCapacity: false)
+    }
+
+    /// Freeze capture at the configured max; caller still commits via fn/✓.
+    private func forceStopForMaxDuration() {
+        guard isRecording, !stoppedForMaxDuration else { return }
+        stoppedForMaxDuration = true
+        maxDurationTimer?.invalidate()
+        maxDurationTimer = nil
+        engine.inputNode.removeTap(onBus: 0)
+        engine.stop()
+        level = 0
+        // Keep isRecording true so stop() still returns the WAV.
+        print("[Flowa][audio] hit user max duration — frozen, waiting for commit")
     }
 
     // MARK: - Buffer handling
@@ -294,10 +407,20 @@ final class AudioCapture: ObservableObject {
 
     /// MainActor-isolated helper called from the audio-tap closure once
     /// the buffer has been converted into Sendable values.
-    private func append(samples: [Float], level newLevel: Float) {
+    private func append(samples: [Float], level newLevel: Float, generation: UInt64) {
+        // Drop late hops from a previous session (or after stop/cancel / max freeze).
+        guard generation == activeGeneration, isRecording, !stoppedForMaxDuration else { return }
         collected.append(contentsOf: samples)
         // Light smoothing so the waveform isn't jittery.
         self.level = self.level * 0.5 + newLevel * 0.5
+        if newLevel > sessionPeakLevel {
+            sessionPeakLevel = newLevel
+        }
+    }
+
+    /// True when this take never rose above ambient noise.
+    var appearsSilent: Bool {
+        sessionPeakLevel < Self.silencePeakThreshold
     }
 
     // MARK: - WAV writing
