@@ -1,9 +1,9 @@
 // Transcriber.swift
 // Flowa
 //
-// WhisperKit wrapper. The CoreML speech model ships inside the app bundle
-// (~1.5 GB). First launch stages it to Application Support and specializes
-// it for this chip (offline). No network download.
+// WhisperKit wrapper. Prefer a local engine (bundled / staged / cache).
+// If missing — normal for builds from the public git repo — download once
+// from the WhisperKit hub (~1.5 GB), then CoreML-specialize for this Mac.
 
 import Foundation
 import Combine
@@ -14,6 +14,8 @@ final class Transcriber: ObservableObject {
 
     enum Status: Equatable {
         case idle
+        /// Hub download of the CoreML weights (0...1). Only when not already local.
+        case downloading(progress: Double)
         /// CoreML specialize / load. `progress` is 0...1 for the ~10 min countdown.
         case preparing(progress: Double)
         case ready
@@ -22,7 +24,7 @@ final class Transcriber: ObservableObject {
     }
 
     /// Countdown length in the install UI (~10 minutes). First CoreML
-    /// specialize on a new Mac often takes 5–10+ minutes for the bundled engine.
+    /// specialize on a new Mac often takes 5–10+ minutes for the engine.
     static let expectedPrepareSeconds: TimeInterval = 10 * 60
 
     /// Hard cap so we never spin forever on a stuck CoreML load.
@@ -66,7 +68,7 @@ final class Transcriber: ObservableObject {
         switch status {
         case .ready, .transcribing:
             return false
-        case .error, .preparing:
+        case .error, .preparing, .downloading:
             return true
         case .idle:
             return !isLoaded
@@ -92,7 +94,7 @@ final class Transcriber: ObservableObject {
         loadTask = nil
     }
 
-    /// Drop the in-memory pipeline so the next load re-prepares from the bundle.
+    /// Drop the in-memory pipeline so the next load re-prepares.
     func resetForReinstall(clearCache: Bool) {
         loadTask?.cancel()
         loadTask = nil
@@ -117,16 +119,12 @@ final class Transcriber: ObservableObject {
         isLoaded = false
 
         let started = Date()
-        startPrepareProgress()
         do {
-            // Stage into Application Support so CoreML / WhisperKit never
-            // write into the read-only app bundle (a common hang cause).
-            let modelFolder = try SpeechModelStore.ensureWritableModel(
-                bundledPath: Self.bundledModelFolderPath
-            )
+            let modelFolder = try await resolveOrDownloadModelFolder()
 
             // prewarm:false — prewarm loads every CoreML model twice and
             // roughly doubles first-install time (looked like a hang at “Almost done”).
+            startPrepareProgress()
             let modelName = self.modelName
             let tokenizerFolder = Self.bundledTokenizerFolderURL
             let downloadBase = SpeechModelStore.preferredDownloadBase
@@ -169,10 +167,12 @@ final class Transcriber: ObservableObject {
             print("[Flowa] Whisper ready in \(elapsed)s from \(modelFolder)")
         } catch is CancellationError {
             stopPrepareProgress()
-            // Leave state for a fresh retry.
             pipe = nil
             isLoaded = false
             if case .preparing = status {
+                status = .idle
+            }
+            if case .downloading = status {
                 status = .idle
             }
         } catch {
@@ -183,6 +183,44 @@ final class Transcriber: ObservableObject {
             status = .error(Self.friendlyLoadError(error))
             print("[Flowa] Whisper FAILED: \(error.localizedDescription)")
         }
+    }
+
+    /// Local engine if present; otherwise one-time hub download (~1.5 GB).
+    private func resolveOrDownloadModelFolder() async throws -> String {
+        if let local = SpeechModelStore.resolveLocalModelFolder(
+            bundledPath: Self.bundledModelFolderPath
+        ) {
+            // Stage out of a read-only app bundle when that's the source.
+            if let bundled = Self.bundledModelFolderPath,
+               (local as NSString).standardizingPath == (bundled as NSString).standardizingPath {
+                return try SpeechModelStore.ensureWritableModel(bundledPath: bundled)
+            }
+            return local
+        }
+
+        // Public git builds ship without the ~1.5 GB weights. Pull once.
+        status = .downloading(progress: 0)
+        print("[Flowa] No local speech engine — downloading \(modelName)…")
+        let url = try await WhisperKit.download(
+            variant: modelName,
+            downloadBase: SpeechModelStore.preferredDownloadBase,
+            progressCallback: { [weak self] progress in
+                Task { @MainActor in
+                    self?.status = .downloading(progress: progress.fractionCompleted)
+                }
+            }
+        )
+
+        guard SpeechModelStore.looksComplete(url) else {
+            throw NSError(
+                domain: "Flowa.Transcriber",
+                code: 5,
+                userInfo: [NSLocalizedDescriptionKey:
+                    "Download finished but the speech engine looks incomplete. Check free disk space and try again."]
+            )
+        }
+        print("[Flowa] Downloaded speech engine to \(url.path)")
+        return url.path
     }
 
     private func startPrepareProgress() {
@@ -212,11 +250,20 @@ final class Transcriber: ObservableObject {
     }
 
     private static func friendlyLoadError(_ error: Error) -> String {
+        let ns = error as NSError
+        if ns.domain == NSURLErrorDomain {
+            return "Couldn't download the speech engine. Check your internet connection and try again."
+        }
         let text = error.localizedDescription.lowercased()
+        if text.contains("network") || text.contains("offline") || text.contains("internet")
+            || text.contains("timed out") || text.contains("hostname") {
+            return "Couldn't download the speech engine. Check your internet connection and try again."
+        }
         if text.contains("space") || text.contains("disk") {
             return "Couldn't finish installation — your Mac may be low on disk space."
         }
-        if text.contains("missing") || text.contains("incomplete") || text.contains("package") {
+        if text.contains("missing") || text.contains("incomplete") || text.contains("package")
+            || text.contains("download") {
             return error.localizedDescription
         }
         if text.contains("too long") {

@@ -80,6 +80,8 @@ final class DictationPipeline: ObservableObject {
     func surfaceModelNotReady() {
         if case .error(let message) = transcriber.status {
             lastErrorMessage = message
+        } else if case .downloading = transcriber.status {
+            lastErrorMessage = "Still downloading the speech engine. Check the main window."
         } else if case .preparing = transcriber.status {
             lastErrorMessage = "Still installing Flowa on this Mac. Try again in a moment."
         } else {

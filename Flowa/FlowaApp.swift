@@ -175,6 +175,10 @@ private struct MenuBarMenu: View {
         if case .error = pipeline.transcriber.status {
             return "Installation needs attention"
         }
+        if case .downloading(let p) = pipeline.transcriber.status {
+            let percent = Int((min(1, max(0, p)) * 100).rounded())
+            return "Downloading speech engine… \(percent)%"
+        }
         if case .preparing(let p) = pipeline.transcriber.status {
             let remaining = Int(ceil(Transcriber.expectedPrepareSeconds * (1.0 - min(1, max(0, p)))))
             if remaining <= 0 || p >= 0.99 { return "Installing… still working" }
@@ -203,7 +207,7 @@ private struct MenuBarMenu: View {
         let alert = NSAlert()
         alert.messageText = "Re-run installation?"
         alert.informativeText = """
-        This prepares Flowa’s speech engine again for this Mac (about 10 minutes the first time). Nothing is downloaded — the engine is already inside the app.
+        This prepares Flowa’s speech engine again for this Mac. If the engine isn’t already on disk, Flowa will download it once (~1.5 GB), then specialize it (about 10 minutes).
 
         Use this if dictation records but never produces text.
         """

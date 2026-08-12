@@ -26,8 +26,9 @@ DerivedData/
 .build/
 Packages/
 
-# Speech model ships in the app (~1.5 GB) but is too large for git
-# (AudioEncoder weights ~1.2 GB). Keep local for Archive/notarize builds.
+# Speech engine (~1.5 GB) is too large for git. Not required to clone/build:
+# first launch downloads it from the WhisperKit hub. Keep a local copy here
+# only when you want to Archive a fully offline app package.
 Flowa/Models/openai_whisper-large-v3-v20240930_turbo/
 
 # Local export / notarize output
