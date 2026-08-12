@@ -14,7 +14,7 @@ That's it.
 
 ## Features
 
-- **Fully local** — speech engine is **bundled** in the app (~1.5 GB). No download. First launch only prepares it for this Mac (~2 minutes, offline)
+- **Fully local** — speech engine is **bundled** in the app (~1.5 GB). No download. First launch only prepares it for this Mac (~10 minutes, offline)
 - **Any language** — 99 languages supported. Switch languages mid-session; Flowa picks it up automatically
 - **Works everywhere** — dictates into any app: notes, email, chat, code editors, browsers
 - **Menu bar icon** — stays running in the background, always ready
@@ -37,7 +37,7 @@ That's it.
    - **Input Monitoring**
    - **Accessibility**
 5. System Settings → Keyboard → set "Press 🌐 key to" → **Do Nothing**
-6. Wait for the **Installing Flowa** screen (~2 minutes once per Mac)
+6. Wait for the **Installing Flowa** screen (~10 minutes once per Mac; keep the app open)
 
 ## Dependencies
 

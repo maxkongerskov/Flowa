@@ -1,8 +1,8 @@
 // InstallingView.swift
 // Flowa
 //
-// One-time offline install screen: CoreML specializes the bundled speech
-// engine for this Mac (~2 minutes). No download, no model brand names.
+// One-time offline install screen: stages + CoreML-specializes the bundled
+// speech engine for this Mac. No download, no model brand names.
 
 import SwiftUI
 
@@ -66,35 +66,52 @@ struct InstallingView: View {
         case .idle:
             installingCard(progress: 0)
         default:
-            installingCard(progress: 0.95)
+            installingCard(progress: 0.99)
         }
     }
 
     private func installingCard(progress: Double) -> some View {
         let clamped = min(1, max(0, progress))
-        // Countdown from ~2:00; if install runs longer, show "Almost done…"
         let remaining = Int(ceil(Transcriber.expectedPrepareSeconds * (1.0 - clamped)))
-        let countdownText: String = {
-            if remaining <= 0 { return "Almost done…" }
-            let m = remaining / 60
-            let s = remaining % 60
-            return String(format: "%d:%02d", m, s)
-        }()
+        // After the ~10 min countdown, keep working — some Macs take longer.
+        let pastCountdown = remaining <= 0 || clamped >= 0.99
 
         return VStack(alignment: .leading, spacing: 14) {
-            ProgressView(value: clamped)
-                .progressViewStyle(.linear)
-                .tint(Theme.accent)
+            if pastCountdown {
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .tint(Theme.accent)
+            } else {
+                ProgressView(value: clamped)
+                    .progressViewStyle(.linear)
+                    .tint(Theme.accent)
+            }
+
             HStack(alignment: .firstTextBaseline) {
-                Text("Approximately 2 minutes to install")
-                    .font(.system(size: 12))
-                    .foregroundColor(Theme.textSecondary)
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(pastCountdown
+                         ? "Still installing…"
+                         : "Approximately 10 minutes to install")
+                        .font(.system(size: 12))
+                        .foregroundColor(Theme.textSecondary)
+                    if pastCountdown {
+                        Text("Almost there — keep Flowa open until setup finishes.")
+                            .font(.system(size: 11))
+                            .foregroundColor(Theme.textTertiary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
                 Spacer()
-                Text(countdownText)
-                    .font(.system(size: 18, weight: .semibold).monospacedDigit())
-                    .foregroundColor(Theme.textPrimary)
-                    .contentTransition(.numericText())
-                    .animation(.linear(duration: 0.2), value: remaining)
+                if pastCountdown {
+                    ProgressView()
+                        .controlSize(.small)
+                } else {
+                    Text(String(format: "%d:%02d", remaining / 60, remaining % 60))
+                        .font(.system(size: 18, weight: .semibold).monospacedDigit())
+                        .foregroundColor(Theme.textPrimary)
+                        .contentTransition(.numericText())
+                        .animation(.linear(duration: 0.2), value: remaining)
+                }
             }
         }
         .modifier(InstallCard())

@@ -177,13 +177,13 @@ private struct MenuBarMenu: View {
         }
         if case .preparing(let p) = pipeline.transcriber.status {
             let remaining = Int(ceil(Transcriber.expectedPrepareSeconds * (1.0 - min(1, max(0, p)))))
-            if remaining <= 0 { return "Installing… almost done" }
+            if remaining <= 0 || p >= 0.99 { return "Installing… still working" }
             let m = remaining / 60
             let s = remaining % 60
             return String(format: "Installing… %d:%02d", m, s)
         }
         if pipeline.transcriber.needsSetup {
-            return "Installing… ~2 min"
+            return "Installing… ~10 min"
         }
         if !permissions.microphoneGranted { return "Microphone permission missing" }
         if !permissions.inputMonitoringGranted { return "Input Monitoring permission missing" }
@@ -203,7 +203,7 @@ private struct MenuBarMenu: View {
         let alert = NSAlert()
         alert.messageText = "Re-run installation?"
         alert.informativeText = """
-        This prepares Flowa’s speech engine again for this Mac (about two minutes). Nothing is downloaded — the engine is already inside the app.
+        This prepares Flowa’s speech engine again for this Mac (about 10 minutes the first time). Nothing is downloaded — the engine is already inside the app.
 
         Use this if dictation records but never produces text.
         """

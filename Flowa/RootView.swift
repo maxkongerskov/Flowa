@@ -6,7 +6,7 @@
 //
 //   ① OnboardingView — until all three TCC permissions are granted
 //   ② InstallingView — one-time CoreML prepare of the bundled engine
-//                       (~2 min offline), or retry after a load error.
+//                       (~10 min offline), or retry after a load error.
 //   ③ HomeView       — main app. Banners surface any permission
 //                       that gets revoked after install.
 
