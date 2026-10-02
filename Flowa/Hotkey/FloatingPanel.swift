@@ -24,7 +24,12 @@ final class FlowaFloatingPanel: NSPanel {
             defer: false
         )
         self.level = .floating
-        self.collectionBehavior = [.canJoinAllSpaces, .stationary, .fullScreenAuxiliary]
+        // Follow the active Space on show (HUD was stuck on Desktop N when
+        // fn was pressed on M). Do NOT combine moveToActiveSpace with
+        // canJoinAllSpaces — AppKit's _validateCollectionBehavior: aborts
+        // (they are mutually exclusive). fullScreenAuxiliary keeps the
+        // pill visible over fullscreen apps.
+        self.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         self.isFloatingPanel = true
         self.hidesOnDeactivate = false
         self.becomesKeyOnlyIfNeeded = true
@@ -54,6 +59,9 @@ final class FlowaFloatingPanel: NSPanel {
         presentationGeneration &+= 1
         // Bumping generation invalidates any in-flight hide completion (orderOut).
         // Snap alpha immediately so a half-finished hide cannot leave us invisible.
+        // Re-assert Space behavior each show: a reused NSPanel can stay assigned
+        // to the Space where it was last ordered out without moveToActiveSpace.
+        collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
         positionAtBottomCentre()
         self.alphaValue = 1.0
         orderFrontRegardless()
